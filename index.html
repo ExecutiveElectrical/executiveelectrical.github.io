@@ -4,24 +4,125 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Executive Electrical | We'll Turn You On</title>
-    <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Load Google Font 'Inter' -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
     <style>
-        /* Apply the 'Inter' font family to the whole site */
         body {
             font-family: 'Inter', sans-serif;
+        }
+
+        /* Added style to "sharpen" the bulb image */
+        #bulb {
+            filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.3));
+            transition: filter 0.3s ease-in-out; /* Add transition for filter */
+        }
+        
+        /* Add a "sharpened" glow when the bulb is on */
+        #bulb.on {
+             filter: drop-shadow(0 0 15px rgba(250, 204, 21, 0.5)) drop-shadow(0 0 30px rgba(250, 204, 21, 0.3));
+        }
+
+        .hero-bulb-container {
+            position: relative;
+            width: 256px;
+            height: 256px;
+            margin-bottom: 2rem;
+        }
+
+        .spark {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background: radial-gradient(circle, #fef08a 0%, #facc15 50%, transparent 100%);
+            border-radius: 50%;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .spark.sparkling {
+            animation: sparkle-animation 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+        }
+
+        @keyframes sparkle-animation {
+            0% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(0.5);
+                filter: blur(0px);
+            }
+            50% {
+                opacity: 1;
+                filter: blur(1px);
+            }
+            100% {
+                opacity: 0;
+                transform: translate(calc(-50% + var(--spark-x)), calc(-50% + var(--spark-y))) scale(0.2);
+                filter: blur(2px);
+            }
+        }
+
+        .spark:nth-child(1) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: 80px;  
+            --spark-y: -80px;  
+            animation-delay: 0s; 
+        }
+        .spark:nth-child(2) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: -90px; 
+            --spark-y: 50px;   
+            animation-delay: 0.05s; 
+        }
+        .spark:nth-child(3) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: 95px;  
+            --spark-y: 40px;   
+            animation-delay: 0.02s; 
+        }
+        .spark:nth-child(4) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: -60px; 
+            --spark-y: -85px;  
+            animation-delay: 0.1s; 
+        }
+        .spark:nth-child(5) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: 85px;  
+            --spark-y: -30px;  
+            animation-delay: 0.12s; 
+        }
+        .spark:nth-child(6) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: -50px; 
+            --spark-y: 90px;   
+            animation-delay: 0.08s; 
+        }
+        .spark:nth-child(7) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: -95px; 
+            --spark-y: -40px;  
+            animation-delay: 0.03s; 
+        }
+        .spark:nth-child(8) { 
+            top: 50%; 
+            left: 50%;
+            --spark-x: 40px;  
+            --spark-y: 75px;   
+            animation-delay: 0.06s; 
         }
     </style>
 </head>
 <body class="bg-gray-900 text-white">
 
-    <!-- 
-      Header & Navigation 
-    -->
+    <!-- Header Navigation -->
     <nav class="bg-gray-800 p-4 sticky top-0 z-50 shadow-lg">
         <div class="container mx-auto flex flex-col md:flex-row justify-between items-center">
             <span class="text-2xl font-bold text-yellow-400">Executive Electrical</span>
@@ -34,45 +135,49 @@
         </div>
     </nav>
 
-    <!-- 
-      Hero Section 
-      UPDATE: New image URLs.
-    -->
-    <section id="home" class="h-screen min-h-[600px] flex flex-col justify-center items-center text-center p-8">
-        <!-- The Interactive Lightbulb (Updated to new URL) -->
-        <img id="bulb" 
-             src="https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee%20off.png" 
-             alt="Interactive Lightbulb - Off" 
-             class="w-64 h-auto cursor-pointer mb-8 transition-all duration-300 ease-in-out hover:scale-105"
-             aria-live="polite"
-             onerror="this.onerror=null; this.src='https://placehold.co/256x256/111827/9ca3af?text=Bulb+Off';">
+    <!-- Hero Section -->
+    <section id="home" class="relative h-screen min-h-[600px] flex flex-col justify-center items-center text-center p-8 overflow-hidden">
+        <div class="hero-bulb-container">
+            <img id="bulb" 
+                 src="https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee%20off.png" 
+                 alt="Interactive Lightbulb - Off" 
+                 class="relative z-10 w-64 h-auto cursor-pointer transition-all duration-300 ease-in-out hover:scale-105"
+                 aria-live="polite"
+                 onerror="this.onerror=null; this.src='https://placehold.co/256x256/111827/9ca3af?text=Bulb+Off';">
+            
+            <div id="spark-wrapper" class="absolute inset-0 z-0 pointer-events-none">
+                <div class="spark"></div>
+                <div class="spark"></div>
+                <div class="spark"></div>
+                <div class="spark"></div>
+                <div class="spark"></div>
+                <div class="spark"></div>
+                <div class="spark"></div>
+                <div class="spark"></div>
+            </div>
+        </div>
 
-        <h1 id="hero-headline" class="text-4xl md:text-6xl font-extrabold mb-4 transition-colors duration-300">
+        <h1 id="hero-headline" class="text-4xl md:text-6xl font-extrabold mb-4 transition-colors duration-300 z-10">
             Feeling left in the dark?
         </h1>
-        <p id="hero-subheadline" class="text-xl text-gray-300 transition-colors duration-300">
+        <p id="hero-subheadline" class="text-xl text-gray-300 transition-colors duration-300 z-10">
             Click the bulb. We'll turn you on.
         </p>
     </section>
 
-    <!-- 
-      Services Section 
-    -->
+    <!-- Services Section -->
     <section id="services" class="py-20 bg-gray-800">
         <div class="container mx-auto px-6">
             <h2 class="text-4xl font-bold text-center mb-12 text-yellow-400">Our Services Get... *Shocking* Results</h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-                <!-- Service Card 1 -->
                 <div class="bg-gray-900 p-8 rounded-lg shadow-xl transform hover:scale-105 hover:shadow-2xl transition-all duration-300">
                     <h3 class="text-2xl font-bold mb-4 text-yellow-400">Expert Home Installations</h3>
                     <p class="text-gray-300">New builds, full rewires, or just a dodgy socket. We'll sort your home electrics. We'll even handle your shorts.</p>
                 </div>
-                <!-- Service Card 2 -->
                 <div class="bg-gray-900 p-8 rounded-lg shadow-xl transform hover:scale-105 hover:shadow-2xl transition-all duration-300">
                     <h3 class="text-2xl font-bold mb-4 text-yellow-400">Commercial & Office Power</h3>
                     <p class="text-gray-300">Keep your business buzzing. We handle lighting, data cabling, and keeping the all-important coffee machine flowing.</p>
                 </div>
-                <!-- Service Card 3 -->
                 <div class="bg-gray-900 p-8 rounded-lg shadow-xl transform hover:scale-105 hover:shadow-2xl transition-all duration-300">
                     <h3 class="text-2xl font-bold mb-4 text-yellow-400">Quickies & Emergency Call-Outs</h3>
                     <p class="text-gray-300">Power gone at a bad time? Don't panic. We're ready to come at a moment's notice, day or night.</p>
@@ -81,9 +186,7 @@
         </div>
     </section>
 
-    <!-- 
-      About Us Section 
-    -->
+    <!-- About Section -->
     <section id="about" class="py-20">
         <div class="container mx-auto px-6 max-w-3xl text-center">
             <h2 class="text-4xl font-bold text-center mb-8 text-yellow-400">We Know How To... *Conduct* Ourselves</h2>
@@ -99,9 +202,7 @@
         </div>
     </section>
 
-    <!-- 
-      Contact CTA Section 
-    -->
+    <!-- Contact Section -->
     <section id="contact" class="py-20 bg-yellow-400 text-gray-900">
         <div class="container mx-auto px-6 text-center">
             <h2 class="text-4xl font-bold mb-4">Let's Make Sparks Fly</h2>
@@ -125,63 +226,62 @@
         </div>
     </section>
 
-    <!-- 
-      Footer 
-    -->
+    <!-- Footer -->
     <footer class="py-8 bg-gray-900 text-center text-gray-500">
         <p>© 2025 Executive Electrical. Licensed to thrill.</p>
         <p>Made with ⚡ and a bit of charm.</p>
     </footer>
 
-
-    <!-- 
-      JavaScript for the interactive bulb 
-      UPDATE: New image URLs.
-    -->
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            
             const bulb = document.getElementById('bulb');
             const heroHeadline = document.getElementById('hero-headline');
             const heroSubheadline = document.getElementById('hero-subheadline');
+            const sparks = document.querySelectorAll('.spark');
 
-            // Define the image URLs
             const bulbOffSrc = "https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee%20off.png";
             const bulbOnSrc = "https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee.png";
 
-            // Keep track of the bulb's state
             let isBulbOn = false;
 
-            // --- Preload the "on" image ---
+            // Preload the "on" image
             const preloadImage = new Image();
             preloadImage.src = bulbOnSrc;
-            // --- End Preload ---
 
-            // Add the click event listener to the bulb
             bulb.addEventListener('click', () => {
-                
                 if (isBulbOn) {
-                    // If it's ON, turn it OFF
                     bulb.src = bulbOffSrc;
                     bulb.alt = "Interactive Lightbulb - Off";
+                    bulb.classList.remove('on'); // Remove 'on' class
                     heroHeadline.textContent = "Feeling left in the dark?";
                     heroSubheadline.textContent = "Click the bulb. We'll turn you on.";
                     isBulbOn = false;
                 } else {
-                    // If it's OFF, turn it ON
                     bulb.src = bulbOnSrc;
                     bulb.alt = "Interactive Lightbulb - On";
+                    bulb.classList.add('on'); // Add 'on' class
                     heroHeadline.textContent = "Ah, that's better!";
                     heroSubheadline.textContent = "That's the spark we're talking about.";
                     isBulbOn = true;
+
+                    // Trigger spark animation
+                    sparks.forEach(spark => {
+                        spark.classList.remove('sparkling');
+                        // reflow trick to restart animation
+                        void spark.offsetWidth; 
+                        spark.classList.add('sparkling');
+                        
+                        spark.addEventListener('animationend', () => {
+                            spark.classList.remove('sparkling');
+                        }, { once: true });
+                    });
                 }
             });
             
-            // Add a fallback for the main image in case it fails to load
+            // Fallback for image loading error
             bulb.addEventListener('error', () => {
                 bulb.src = 'https://placehold.co/256x256/111827/9ca3af?text=Bulb+Off';
             });
-
         });
     </script>
 
