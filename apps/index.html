@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Executive Electrical | Site Companion</title>
+    
+    <!-- FAVICON -->
+    <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee.png">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        slate: {
+                            850: '#151F2E',
+                            900: '#0F172A',
+                            950: '#020617',
+                        },
+                        gold: {
+                            400: '#FACC15',
+                            500: '#EAB308',
+                            600: '#CA8A04',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        marker: ['Permanent Marker', 'cursive'],
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Permanent+Marker&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-marker { font-family: 'Permanent Marker', cursive; }
+        
+        /* Smooth fade in */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background-color: white !important; color: black !important; }
+            .print-border { border: 2px solid black !important; }
+        }
+        .print-only { display: none; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen selection:bg-gold-500 selection:text-black">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- ICONS (Wrapped properly) ---
+        const Icon = ({ children, size = 20, className = "" }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                {children}
+            </svg>
+        );
+
+        const icons = {
+            home: <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>,
+            camera: <><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></>,
+            zap: <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>,
+            grid: <><path d="M3 3h7v7H3z"/><path d="M14 3h7v7h-7z"/><path d="M14 14h7v7h-7z"/><path d="M3 14h7v7H3z"/></>,
+            check: <><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></>,
+            calc: <><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="16" y1="14" x2="16" y2="14"/><line x1="12" y1="18" x2="12" y2="18"/><line x1="8" y1="18" x2="8" y2="18"/><line x1="16" y1="18" x2="16" y2="18"/></>,
+            print: <><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></>,
+            arrowLeft: <><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></>,
+            ruler: <><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></>,
+            activity: <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>,
+            thermometer: <><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/><path d="M20 30V10"/><path d="M20 10V30"/></>
+        };
+
+        // --- COMPONENTS ---
+
+        // 1. DASHBOARD
+        const Dashboard = ({ onNavigate }) => {
+            const apps = [
+                // Updated: Used the 'isImage' flag to use the Logo for the Estimator button
+                { 
+                    id: 'estimator', 
+                    name: 'Cable Estimator', 
+                    desc: 'Load & volt drop calc', 
+                    icon: 'https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee.png', 
+                    isImage: true, 
+                    color: 'text-blue-400', 
+                    border: 'border-blue-500/30', 
+                    hover: 'group-hover:border-blue-500' 
+                },
+                { id: 'snag', name: 'The Shocking Truth', desc: 'Visual snag reporter', icon: icons.camera, color: 'text-red-400', border: 'border-red-500/30', hover: 'group-hover:border-red-500' },
+                { id: 'bills', name: 'Bill Buster', desc: 'Energy savings calc', icon: icons.zap, color: 'text-gold-400', border: 'border-gold-500/30', hover: 'group-hover:border-gold-500' },
+                { id: 'labels', name: 'Fuse Box Hero', desc: 'Circuit chart maker', icon: icons.grid, color: 'text-purple-400', border: 'border-purple-500/30', hover: 'group-hover:border-purple-500' },
+                { id: 'checklist', name: 'Apprentice Minder', desc: 'Quality control', icon: icons.check, color: 'text-emerald-400', border: 'border-emerald-500/30', hover: 'group-hover:border-emerald-500' },
+            ];
+
+            return (
+                <div className="space-y-8 animate-fade-in max-w-4xl mx-auto">
+                    <div className="text-center py-8">
+                        <img src="https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee.png" alt="Logo" className="w-24 h-24 mx-auto mb-4 object-contain drop-shadow-[0_0_15px_rgba(250,204,21,0.3)]" />
+                        <h1 className="text-3xl font-black text-slate-100 tracking-tight">Executive Electrical</h1>
+                        <p className="text-slate-500 mt-2 font-medium">Site Companion App</p>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 px-4">
+                        {apps.map(app => (
+                            <button 
+                                key={app.id} 
+                                onClick={() => onNavigate(app.id)}
+                                className={`group relative bg-slate-900 border ${app.border} p-6 rounded-2xl shadow-xl hover:bg-slate-850 transition-all duration-300 text-left flex flex-col justify-between h-32 hover:scale-[1.02] ${app.hover} hover:shadow-2xl hover:shadow-black/50`}
+                            >
+                                <div className="flex items-start justify-between w-full mb-2">
+                                    <div className={`p-2 rounded-lg bg-slate-800 ${app.color}`}>
+                                        {/* Check if icon is an image or SVG path */}
+                                        {app.isImage ? (
+                                            <img src={app.icon} alt={app.name} className="w-6 h-6 object-contain" />
+                                        ) : (
+                                            <Icon size={24}>{app.icon}</Icon>
+                                        )}
+                                    </div>
+                                    <Icon size={16} className="text-slate-600 group-hover:text-slate-400 transition-colors">{icons.arrowLeft}</Icon>
+                                </div>
+                                <div>
+                                    <span className="block text-lg font-bold text-slate-200 group-hover:text-white">{app.name}</span>
+                                    <span className="text-xs text-slate-500 group-hover:text-slate-400">{app.desc}</span>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // 2. CABLE ESTIMATOR (Updated with Phase & Cable Type)
+        const CableEstimator = () => {
+            const [load, setLoad] = useState('');
+            const [length, setLength] = useState('');
+            const [phase, setPhase] = useState('1'); 
+            const [cableType, setCableType] = useState('Twin & Earth');
+            const [method, setMethod] = useState('clipped');
+            const [results, setResults] = useState(null);
+
+            const cableData = [
+                { size: 1.5, ratingC: 20, ratingA: 14.5, mvAm: 29 },
+                { size: 2.5, ratingC: 27, ratingA: 20, mvAm: 18 },
+                { size: 4.0, ratingC: 37, ratingA: 26, mvAm: 11 },
+                { size: 6.0, ratingC: 47, ratingA: 34, mvAm: 7.3 },
+                { size: 10.0, ratingC: 64, ratingA: 46, mvAm: 4.4 },
+                { size: 16.0, ratingC: 85, ratingA: 61, mvAm: 2.8 }
+            ];
+
+            useEffect(() => {
+                if (!load || !length) { setResults(null); return; }
+                
+                const amps = parseFloat(load);
+                const dist = parseFloat(length);
+                const voltage = phase === '1' ? 230 : 400;
+
+                const recommended = cableData.find(c => (method === 'clipped' ? c.ratingC : c.ratingA) >= amps);
+
+                if (!recommended) {
+                    setResults({ status: 'error', message: 'Load too high (>85A) for standard domestic cables' });
+                    return;
+                }
+                
+                const vDrop = (recommended.mvAm * amps * dist) / 1000;
+                const vPercent = (vDrop / voltage) * 100;
+                
+                let status = 'success';
+                let message = 'Compliant with I.S. 10101';
+                
+                if (vPercent > 5) {
+                    status = 'fail';
+                    message = 'Failed: Voltage drop > 5%';
+                } else if (vPercent > 3) {
+                    status = 'warning';
+                    message = 'Caution: OK for Power, too high for Lighting';
+                }
+
+                setResults({
+                    size: recommended.size,
+                    rating: method === 'clipped' ? recommended.ratingC : recommended.ratingA,
+                    drop: vDrop.toFixed(2),
+                    percent: vPercent.toFixed(1),
+                    status,
+                    message
+                });
+            }, [load, length, method, phase, cableType]);
+
+            return (
+                <div className="space-y-6 animate-fade-in max-w-2xl mx-auto">
+                     <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-2xl">
+                        <h2 className="text-xl font-bold text-blue-400 mb-6 flex items-center gap-3 pb-4 border-b border-slate-800">
+                            {/* Uses the image icon here too for consistency if desired, or keep calc icon */}
+                            <Icon>{icons.calc}</Icon> Cable Estimator
+                        </h2>
+                        
+                        <div className="space-y-6">
+                            {/* Inputs Grid */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                                        <Icon size={14}>{icons.activity}</Icon> Load (Amps)
+                                    </label>
+                                    <input type="number" value={load} onChange={e => setLoad(e.target.value)} placeholder="e.g. 32" className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-lg p-3 text-slate-200 outline-none transition-all" />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                                        <Icon size={14}>{icons.ruler}</Icon> Length (M)
+                                    </label>
+                                    <input type="number" value={length} onChange={e => setLength(e.target.value)} placeholder="e.g. 20" className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-lg p-3 text-slate-200 outline-none transition-all" />
+                                </div>
+                            </div>
+
+                            {/* Phase & Cable Type */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Phase</label>
+                                    <div className="flex bg-slate-950 rounded-lg p-1 border border-slate-800">
+                                        {['1', '3'].map(p => (
+                                            <button key={p} onClick={() => setPhase(p)} className={`flex-1 py-2 rounded-md text-sm font-bold transition-all ${phase === p ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>
+                                                {p === '1' ? 'Single' : 'Three'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Cable</label>
+                                    <select value={cableType} onChange={e => setCableType(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-300 outline-none h-[46px]">
+                                        <option>Twin & Earth</option>
+                                        <option>SWA</option>
+                                        <option>Singles</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* Method */}
+                            <div className="space-y-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                                    <Icon size={14}>{icons.thermometer}</Icon> Installation
+                                </label>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button onClick={() => setMethod('clipped')} className={`p-3 rounded-lg border text-sm text-left transition-all ${method === 'clipped' ? 'bg-blue-900/20 border-blue-500 text-blue-400' : 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700'}`}>
+                                        <span className="font-bold block">Clipped Direct</span>
+                                        <span className="text-[10px] opacity-70">Surface / Tray</span>
+                                    </button>
+                                    <button onClick={() => setMethod('insulated')} className={`p-3 rounded-lg border text-sm text-left transition-all ${method === 'insulated' ? 'bg-blue-900/20 border-blue-500 text-blue-400' : 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700'}`}>
+                                        <span className="font-bold block">In Insulation</span>
+                                        <span className="text-[10px] opacity-70">Walls / Attic</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Results */}
+                            {results && (
+                                <div className={`mt-6 rounded-xl border p-5 ${
+                                    results.status === 'success' ? 'bg-emerald-900/10 border-emerald-500/30' : 
+                                    results.status === 'warning' ? 'bg-amber-900/10 border-amber-500/30' : 
+                                    'bg-red-900/10 border-red-500/30'
+                                }`}>
+                                    {results.status === 'error' ? (
+                                        <div className="text-red-400 font-bold text-center py-2 flex items-center justify-center gap-2">
+                                            <Icon size={20}>{icons.activity}</Icon> {results.message}
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="flex justify-between items-end mb-2">
+                                                <div>
+                                                    <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-1">Recommended</div>
+                                                    <div className="text-4xl font-black text-white">{results.size} <span className="text-lg text-slate-500">mm²</span></div>
+                                                </div>
+                                                <div className={`text-right ${
+                                                    results.status === 'success' ? 'text-emerald-400' : 
+                                                    results.status === 'warning' ? 'text-amber-400' : 'text-red-400'
+                                                }`}>
+                                                    <div className="font-bold text-lg">{results.status === 'success' ? 'PASS' : results.status === 'warning' ? 'CHECK' : 'FAIL'}</div>
+                                                    <div className="text-xs opacity-80">{results.drop}V Drop ({results.percent}%)</div>
+                                                </div>
+                                            </div>
+                                            <div className="h-px bg-slate-700/50 my-3"></div>
+                                            <div className="flex justify-between text-xs text-slate-400">
+                                                <span>Max Rating: <strong className="text-slate-200">{results.rating}A</strong></span>
+                                                <span>{results.message}</span>
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // 3. THE SHOCKING TRUTH (Snag List) - Dark Mode Update
+        const SnagList = () => {
+            const [image, setImage] = useState(null);
+            const [note, setNote] = useState('');
+            
+            const handleImage = (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    setImage(URL.createObjectURL(e.target.files[0]));
+                }
+            };
+
+            return (
+                <div className="space-y-6 animate-fade-in max-w-2xl mx-auto">
+                     <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-2xl">
+                        <h2 className="text-xl font-bold text-red-400 mb-6 flex items-center gap-3 pb-4 border-b border-slate-800">
+                            <Icon>{icons.camera}</Icon> The Shocking Truth
+                        </h2>
+                        
+                        <div className="space-y-4 no-print">
+                            <div className="relative border-2 border-dashed border-slate-700 rounded-xl p-8 text-center hover:bg-slate-800 transition group cursor-pointer">
+                                <input type="file" accept="image/*" capture="environment" onChange={handleImage} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                                <div className="text-slate-500 group-hover:text-slate-300">
+                                    <div className="mx-auto mb-2 w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700">
+                                        <Icon size={20}>{icons.camera}</Icon>
+                                    </div>
+                                    <p className="text-sm font-medium">Tap to add photo</p>
+                                </div>
+                            </div>
+                            <textarea placeholder="Describe the hazard..." value={note} onChange={e => setNote(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 h-24 text-slate-200 focus:border-red-500 outline-none" />
+                            <button onClick={() => window.print()} className="w-full bg-red-600 hover:bg-red-500 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-red-900/20">
+                                <Icon>{icons.print}</Icon> Print Report
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Report Card Preview */}
+                    {image && (
+                        <div className="bg-white text-black p-8 rounded-xl print-only print:block border-2 border-slate-200">
+                            <div className="flex justify-between items-center border-b-4 border-red-600 pb-4 mb-6">
+                                <h1 className="text-4xl font-black uppercase text-red-600">Danger Report</h1>
+                                <div className="text-right">
+                                    <p className="font-bold">Executive Electrical</p>
+                                    <p className="text-sm text-gray-500">Safety Inspection</p>
+                                </div>
+                            </div>
+                            <div className="border-4 border-black p-2 mb-6 rotate-1 shadow-lg">
+                                <img src={image} className="w-full h-64 object-cover grayscale contrast-125" alt="Evidence" />
+                            </div>
+                            <div className="bg-red-50 p-6 border-l-8 border-red-600">
+                                <h3 className="font-bold text-red-800 uppercase mb-2 text-sm tracking-wider">Inspector's Notes</h3>
+                                <p className="font-marker text-2xl transform -rotate-1 text-red-900">{note || "IMMEDIATE ATTENTION REQUIRED"}</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // 4. BILL BUSTER - Dark Mode Update
+        const BillBuster = () => {
+            const [oldWatts, setOldWatts] = useState(50);
+            const [newWatts, setNewWatts] = useState(5);
+            const [hours, setHours] = useState(6);
+            const [qty, setQty] = useState(10);
+            const rate = 0.35; 
+
+            const calculate = (w) => ((w * qty * hours * 365) / 1000) * rate;
+            const savings = calculate(oldWatts) - calculate(newWatts);
+
+            return (
+                <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-2xl animate-fade-in max-w-2xl mx-auto">
+                    <h2 className="text-xl font-bold text-gold-400 mb-6 flex items-center gap-3 pb-4 border-b border-slate-800">
+                        <Icon>{icons.zap}</Icon> Watt's It Cost?
+                    </h2>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                        <div className="space-y-4">
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold text-slate-500 uppercase">Old Bulb (W)</label>
+                                <input type="number" value={oldWatts} onChange={e => setOldWatts(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg border border-slate-800 focus:border-gold-500 outline-none text-slate-200" />
+                            </div>
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold text-slate-500 uppercase">New LED (W)</label>
+                                <input type="number" value={newWatts} onChange={e => setNewWatts(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg border border-slate-800 focus:border-gold-500 outline-none text-slate-200" />
+                            </div>
+                        </div>
+                        <div className="space-y-4">
+                             <div className="space-y-1">
+                                <label className="text-xs font-bold text-slate-500 uppercase">Quantity</label>
+                                <input type="number" value={qty} onChange={e => setQty(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg border border-slate-800 focus:border-gold-500 outline-none text-slate-200" />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex justify-between">
+                                    <label className="text-xs font-bold text-slate-500 uppercase">Hours/Day</label>
+                                    <span className="text-xs font-bold text-gold-400">{hours} hrs</span>
+                                </div>
+                                <input type="range" min="1" max="24" value={hours} onChange={e => setHours(e.target.value)} className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-gold-500" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-gradient-to-br from-slate-950 to-slate-900 rounded-xl p-8 border border-slate-800 text-center relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10"><Icon size={100} className="text-gold-500">{icons.zap}</Icon></div>
+                        <p className="text-slate-500 uppercase text-xs font-bold tracking-widest mb-1">Estimated Annual Savings</p>
+                        <h3 className="text-5xl md:text-6xl font-black text-emerald-400">€{savings.toFixed(2)}</h3>
+                        <p className="text-slate-600 text-xs mt-3">Based on €0.35/kWh rate</p>
+                    </div>
+                </div>
+            );
+        };
+
+        // 5. FUSE BOX HERO (Label Maker) - Dark Mode Update
+        const LabelMaker = () => {
+            const [labels, setLabels] = useState(Array(12).fill(""));
+
+            const updateLabel = (index, value) => {
+                const newLabels = [...labels];
+                newLabels[index] = value;
+                setLabels(newLabels);
+            };
+
+            return (
+                <div className="space-y-6 animate-fade-in max-w-4xl mx-auto">
+                    <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-2xl no-print">
+                        <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
+                            <h2 className="text-xl font-bold text-purple-400 flex items-center gap-3">
+                                <Icon>{icons.grid}</Icon> Fuse Box Hero
+                            </h2>
+                            <button onClick={() => window.print()} className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 transition-all">
+                                <Icon size={16}>{icons.print}</Icon> Print Label
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                            {labels.map((label, i) => (
+                                <div key={i} className="relative group">
+                                    <span className="absolute top-2 left-3 text-[10px] text-slate-500 font-bold">MCB {i+1}</span>
+                                    <input 
+                                        type="text" 
+                                        placeholder="Spare" 
+                                        value={label} 
+                                        onChange={(e) => updateLabel(i, e.target.value)} 
+                                        className="w-full bg-slate-950 border border-slate-800 rounded-lg pt-6 pb-2 px-3 text-sm text-center focus:border-purple-500 outline-none text-slate-200 transition-colors"
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Print Only View */}
+                    <div className="print-only bg-white text-black p-4 w-full h-full absolute top-0 left-0">
+                        <div className="flex items-center justify-between border-b-2 border-black pb-2 mb-4">
+                            <h1 className="font-bold text-xl">DISTRIBUTION BOARD CHART</h1>
+                            <span className="text-xs">Executive Electrical</span>
+                        </div>
+                        <div className="grid grid-cols-6 gap-0 border-2 border-black">
+                            {labels.map((label, i) => (
+                                <div key={i} className="border border-black p-2 h-20 flex flex-col items-center justify-center text-center">
+                                    <div className="font-bold text-[10px] mb-1 bg-black text-white px-1 rounded">MCB {i+1}</div>
+                                    <div className="font-sans text-xs font-bold leading-tight">{label || "SPARE"}</div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="mt-4 text-[10px] text-right">Inst: _______________ Date: _______________</div>
+                    </div>
+                </div>
+            );
+        };
+
+        // 6. APPRENTICE MINDER (Checklist) - Dark Mode Update
+        const ApprenticeMinder = () => {
+            const [items, setItems] = useState([
+                { id: 1, text: "Main Earth Connected?", checked: false },
+                { id: 2, text: "Connections Tight? (The Tug Test)", checked: false },
+                { id: 3, text: "Grommets in Metal Boxes?", checked: false },
+                { id: 4, text: "No Copper Showing outside terminals?", checked: false },
+                { id: 5, text: "Phase Sleeving on Switch Lines?", checked: false },
+                { id: 6, text: "Debris Cleaned from Box?", checked: false },
+                { id: 7, text: "Faceplate Level?", checked: false },
+            ]);
+
+            const toggle = (id) => {
+                setItems(items.map(i => i.id === id ? { ...i, checked: !i.checked } : i));
+            };
+
+            const progress = Math.round((items.filter(i => i.checked).length / items.length) * 100);
+
+            return (
+                <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-2xl h-full animate-fade-in max-w-2xl mx-auto">
+                    <h2 className="text-xl font-bold text-emerald-400 mb-6 flex items-center gap-3 pb-4 border-b border-slate-800">
+                        <Icon>{icons.check}</Icon> Apprentice Minder
+                    </h2>
+                    
+                    <div className="mb-8">
+                        <div className="flex justify-between text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
+                            <span>Quality Score</span>
+                            <span className={progress === 100 ? 'text-emerald-400' : 'text-slate-400'}>{progress}%</span>
+                        </div>
+                        <div className="w-full bg-slate-950 rounded-full h-3 border border-slate-800">
+                            <div className="bg-emerald-500 h-full rounded-full transition-all duration-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]" style={{ width: `${progress}%` }}></div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-3">
+                        {items.map(item => (
+                            <div 
+                                key={item.id} 
+                                onClick={() => toggle(item.id)}
+                                className={`group p-4 rounded-xl border cursor-pointer flex items-center gap-4 transition-all duration-200 ${
+                                    item.checked 
+                                    ? 'bg-emerald-900/10 border-emerald-500/30' 
+                                    : 'bg-slate-950 border-slate-800 hover:border-slate-600'
+                                }`}
+                            >
+                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
+                                    item.checked 
+                                    ? 'bg-emerald-500 border-emerald-500 scale-110' 
+                                    : 'border-slate-600 group-hover:border-slate-400'
+                                }`}>
+                                    {item.checked && <Icon size={14} className="text-slate-900 stroke-[3]">{icons.check}</Icon>}
+                                </div>
+                                <span className={`font-medium transition-colors ${
+                                    item.checked 
+                                    ? 'text-emerald-400/80 line-through decoration-emerald-500/50' 
+                                    : 'text-slate-300'
+                                }`}>{item.text}</span>
+                            </div>
+                        ))}
+                    </div>
+                    {progress === 100 && (
+                        <div className="mt-8 text-center animate-bounce">
+                            <span className="bg-emerald-500 text-slate-900 font-bold px-6 py-2 rounded-full shadow-lg shadow-emerald-900/20">All Clear! Good job. ☕</span>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // --- MAIN APP SHELL ---
+        const App = () => {
+            const [view, setView] = useState('dashboard');
+
+            // Inject JotForm
+            useEffect(() => {
+                const script = document.createElement('script');
+                script.src = "https://cdn.jotfor.ms/agent/embedjs/019600e0ca937f919845b00e1a153ee94e2a/embed.js";
+                script.async = true;
+                document.body.appendChild(script);
+                return () => { if(document.body.contains(script)) document.body.removeChild(script); };
+            }, []);
+
+            const renderView = () => {
+                switch(view) {
+                    case 'estimator': return <CableEstimator />;
+                    case 'snag': return <SnagList />;
+                    case 'bills': return <BillBuster />;
+                    case 'labels': return <LabelMaker />;
+                    case 'checklist': return <ApprenticeMinder />;
+                    default: return <Dashboard onNavigate={setView} />;
+                }
+            };
+
+            return (
+                <div className="min-h-screen pb-20 bg-slate-950">
+                    <nav className="bg-slate-900 border-b border-slate-800 p-4 sticky top-0 z-50 no-print shadow-lg shadow-black/20">
+                        <div className="max-w-4xl mx-auto flex items-center justify-between">
+                            {view !== 'dashboard' ? (
+                                <button onClick={() => setView('dashboard')} className="flex items-center gap-2 text-slate-400 hover:text-white transition group text-sm font-bold uppercase tracking-wider">
+                                    <Icon size={18} className="group-hover:-translate-x-1 transition-transform">{icons.arrowLeft}</Icon> Back
+                                </button>
+                            ) : (
+                                <div className="font-bold text-gold-500 tracking-wider text-sm uppercase">Executive Electrical</div>
+                            )}
+                            {view !== 'dashboard' && <div className="font-bold text-gold-500 hidden md:block tracking-wider text-sm uppercase">Executive Electrical</div>}
+                        </div>
+                    </nav>
+
+                    <main className="max-w-4xl mx-auto p-4 pt-8">
+                        {renderView()}
+                    </main>
+                    
+                    <footer className="text-center text-slate-700 text-xs py-8 no-print font-medium uppercase tracking-widest">
+                        <p>© 2026 Executive Electrical. Built for Sparks.</p>
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
