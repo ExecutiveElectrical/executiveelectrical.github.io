@@ -1,0 +1,221 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Ruler, 
+  Activity, 
+  AlertTriangle, 
+  CheckCircle2,
+  FileText,
+  Info
+} from 'lucide-react';
+
+const App = () => {
+  const [load, setLoad] = useState('');
+  const [length, setLength] = useState('');
+  const [phase, setPhase] = useState('1'); // '1' for Single, '3' for Three
+  const [cableType, setCableType] = useState('Twin & Earth');
+  const [results, setResults] = useState(null);
+
+  // Inject the JotForm Agent Script on mount
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = "https://cdn.jotfor.ms/agent/embedjs/019600e0ca937f919845b00e1a153ee94e2a/embed.js";
+    script.async = true;
+    document.body.appendChild(script);
+
+    return () => {
+      if (document.body.contains(script)) {
+        document.body.removeChild(script);
+      }
+    };
+  }, []);
+
+  const cableData = [
+    { size: 1.0, rating: 16 },
+    { size: 1.5, rating: 20 },
+    { size: 2.5, rating: 27 },
+    { size: 4.0, rating: 37 },
+    { size: 6.0, rating: 47 },
+    { size: 10.0, rating: 64 },
+    { size: 16.0, rating: 85 }
+  ];
+
+  // Real-time calculation effect
+  useEffect(() => {
+    if (!load || !length) {
+      setResults(null);
+      return;
+    }
+
+    const amps = parseFloat(load);
+    const dist = parseFloat(length);
+    
+    // Simple heuristic for cable sizing (Simplified for demo)
+    const recommended = cableData.find(c => c.rating > amps) || cableData[cableData.length - 1];
+    
+    // Simplified Voltage Drop calculation: (mV/A/m * Amps * length) / 1000
+    // Rough mV/A/m value for copper
+    const mvAm = 18; 
+    const vDrop = (mvAm * amps * dist) / 1000;
+    const vPercent = (vDrop / (phase === '1' ? 230 : 400)) * 100;
+
+    setResults({
+      size: recommended.size,
+      amps: amps.toFixed(1),
+      drop: vDrop.toFixed(2),
+      percent: vPercent.toFixed(1),
+      status: vPercent > 3 ? 'warning' : 'success'
+    });
+  }, [load, length, phase, cableType]);
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-white font-sans p-4 md:p-8">
+      {/* Header */}
+      <div className="max-w-2xl mx-auto mb-8 flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <img 
+            src="https://raw.githubusercontent.com/ohmydaysOMD/executiveelectrical.github.io/refs/heads/main/ee.png" 
+            alt="Executive Electrical Logo" 
+            className="w-16 h-16 object-contain drop-shadow-[0_0_10px_rgba(250,204,21,0.5)]"
+          />
+          <div>
+            <h1 className="text-3xl font-black text-yellow-400">
+              Executive Estimator
+            </h1>
+            <p className="text-gray-400 text-sm">Quick technical checks for the modern spark.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-2xl mx-auto grid gap-6">
+        {/* Calculator Card */}
+        <div className="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Load Input */}
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-gray-400 flex items-center gap-2">
+                <Activity size={16} /> Load Current (Amps)
+              </label>
+              <input 
+                type="number" 
+                value={load}
+                onChange={(e) => setLoad(e.target.value)}
+                placeholder="e.g. 32"
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-yellow-400 transition-all text-xl"
+              />
+            </div>
+
+            {/* Run Length */}
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-gray-400 flex items-center gap-2">
+                <Ruler size={16} /> Run Length (Metres)
+              </label>
+              <input 
+                type="number" 
+                value={length}
+                onChange={(e) => setLength(e.target.value)}
+                placeholder="e.g. 25"
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-yellow-400 transition-all text-xl"
+              />
+            </div>
+
+            {/* Phase Selection */}
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-gray-400">Phase Type</label>
+              <div className="flex gap-2">
+                {['1', '3'].map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setPhase(p)}
+                    className={`flex-1 py-3 rounded-xl font-bold transition-all ${
+                      phase === p ? 'bg-yellow-400 text-gray-900' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                    }`}
+                  >
+                    {p === '1' ? 'Single (230V)' : 'Three (400V)'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Cable Type */}
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-gray-400">Cable Type</label>
+              <select 
+                value={cableType}
+                onChange={(e) => setCableType(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+              >
+                <option>Twin & Earth</option>
+                <option>SWA (Armoured)</option>
+                <option>Singles (Conduit)</option>
+              </select>
+            </div>
+          </div>
+          
+          {/* Decorative hint since button is gone */}
+          <div className="mt-6 text-center text-xs text-gray-500 italic">
+            * Results update automatically as you type
+          </div>
+        </div>
+
+        {/* Results Section */}
+        {results && (
+          <div className={`rounded-3xl p-8 border-2 animate-in fade-in slide-in-from-bottom-4 duration-500 ${
+            results.status === 'success' ? 'bg-green-900/20 border-green-500/50' : 'bg-red-900/20 border-red-500/50'
+          }`}>
+            <div className="flex items-start justify-between mb-6">
+              <div>
+                <h3 className="text-gray-400 text-sm font-bold uppercase tracking-wider mb-1">Recommended Cable Size</h3>
+                <div className="text-5xl font-black flex items-baseline gap-2">
+                  {results.size} <span className="text-xl">mm²</span>
+                </div>
+              </div>
+              {results.status === 'success' ? (
+                <CheckCircle2 size={48} className="text-green-500" />
+              ) : (
+                <AlertTriangle size={48} className="text-red-500" />
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-black/20 rounded-2xl p-4">
+                <p className="text-xs text-gray-400 font-bold uppercase">Volt Drop</p>
+                <p className="text-xl font-bold">{results.drop}V ({results.percent}%)</p>
+              </div>
+              <div className="bg-black/20 rounded-2xl p-4">
+                <p className="text-xs text-gray-400 font-bold uppercase">Compliance</p>
+                <p className={`text-xl font-bold ${results.status === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                  {results.status === 'success' ? 'Pass' : 'Limit Exceeded'}
+                </p>
+              </div>
+            </div>
+
+            {results.status === 'warning' && (
+              <div className="mt-6 flex gap-3 items-center bg-red-900/40 p-4 rounded-2xl text-sm border border-red-500/30">
+                <Info size={20} className="shrink-0" />
+                <p>Voltage drop exceeds 3% (lighting) or 5% (power). Consider up-sizing to {results.size + 4}mm² or reducing run length.</p>
+              </div>
+            )}
+            
+            <button className="mt-6 w-full py-3 bg-white/10 hover:bg-white/20 rounded-xl font-bold flex items-center justify-center gap-2 transition-all">
+              <FileText size={18} /> Save to Job Sheet
+            </button>
+          </div>
+        )}
+
+        {/* Quick Tips Footer */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="p-4 rounded-2xl bg-gray-800/50 border border-gray-700">
+            <h4 className="text-yellow-400 font-bold text-sm mb-1 italic">Pro Tip</h4>
+            <p className="text-xs text-gray-400 leading-relaxed">Always check the installation method. Bundled cables in thermal insulation need massive derating.</p>
+          </div>
+          <div className="p-4 rounded-2xl bg-gray-800/50 border border-gray-700">
+            <h4 className="text-yellow-400 font-bold text-sm mb-1 italic">Quick Ref</h4>
+            <p className="text-xs text-gray-400 leading-relaxed">Typical Ring Main: 2.5mm² on 32A MCB. Max length approx 30-40m for volt drop.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
