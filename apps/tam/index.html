@@ -135,7 +135,7 @@
             // members) before logging or editing anything. Runs silently.
             useEffect(() => {
                 const refreshOnOpen = [
-                    'add-project', 'edit-project', 'add-person',
+                    'add-project', 'edit-project', 'add-person', 'edit-person',
                     'add-time', 'edit-time', 'add-material', 'edit-material'
                 ];
                 if (scriptUrl && refreshOnOpen.includes(view)) {
@@ -175,6 +175,7 @@
 
             // --- Form States ---
             const [projectFilter, setProjectFilter] = useState('All');
+            const [analyticsFilter, setAnalyticsFilter] = useState('All');
             const [newProjName, setNewProjName] = useState('');
             const [newProjClient, setNewProjClient] = useState('');
             const [newProjQuote, setNewProjQuote] = useState('');
@@ -211,6 +212,12 @@
             const [newPersonName, setNewPersonName] = useState('');
             const [newPersonRole, setNewPersonRole] = useState('Electrician');
             const [newPersonRate, setNewPersonRate] = useState('');
+
+            // --- Edit Team Member States ---
+            const [editingPerson, setEditingPerson] = useState(null);
+            const [editPersonName, setEditPersonName] = useState('');
+            const [editPersonRole, setEditPersonRole] = useState('');
+            const [editPersonRate, setEditPersonRate] = useState('');
 
             // Export States & Settings
             const [showAccountantExport, setShowAccountantExport] = useState(false);
@@ -980,13 +987,16 @@
                         
                         <div className="space-y-3">
                             {people.map(person => (
-                                <div key={person.id} className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-between items-center">
+                                <div key={person.id} onClick={() => { setEditingPerson(person); setEditPersonName(person.name); setEditPersonRole(person.role || ''); setEditPersonRate(person.rate); setView('edit-person'); }} className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-between items-center cursor-pointer hover:bg-gray-700 transition-colors">
                                     <div>
                                         <h3 className="font-bold text-white text-lg">{person.name}</h3>
                                         <p className="text-sm text-gray-400">{person.role}</p>
                                     </div>
-                                    <div className="text-right bg-gray-900 py-1 px-3 rounded-lg border border-gray-700">
-                                        <p className="font-bold text-yellow-400 text-lg">€{person.rate}<span className="text-xs text-gray-400">/hr</span></p>
+                                    <div className="flex items-center gap-3">
+                                        <div className="text-right bg-gray-900 py-1 px-3 rounded-lg border border-gray-700">
+                                            <p className="font-bold text-yellow-400 text-lg">€{person.rate}<span className="text-xs text-gray-400">/hr</span></p>
+                                        </div>
+                                        <Edit size={16} className="text-gray-500" />
                                     </div>
                                 </div>
                             ))}
@@ -1035,6 +1045,65 @@
                 );
             };
 
+            // --- VIEW: EDIT PERSON ---
+            const renderEditPerson = () => {
+                if (!editingPerson) return null;
+
+                const handleSave = () => {
+                    if (!editPersonName || editPersonRate === '' || editPersonRate === null) return alert('Provide Name and Rate.');
+                    const updatedPerson = { ...editingPerson, name: editPersonName, role: editPersonRole, rate: Number(editPersonRate) };
+                    const updatedPeople = people.map(p => p.id === editingPerson.id ? updatedPerson : p);
+                    handleSetPeople(updatedPeople, 'upsert', updatedPerson);
+                    setEditingPerson(null);
+                    setView('main');
+                };
+
+                const handleDelete = () => {
+                    const loggedHours = timeLogs.filter(t => t.personId === editingPerson.id).length;
+                    const warning = loggedHours > 0
+                        ? `${editingPerson.name} has ${loggedHours} time entr${loggedHours === 1 ? 'y' : 'ies'} logged. Deleting them will leave those entries showing as "Unknown User" with no labour cost. Delete anyway?`
+                        : `Delete ${editingPerson.name}?`;
+                    if (window.confirm(warning)) {
+                        const updatedPeople = people.filter(p => p.id !== editingPerson.id);
+                        handleSetPeople(updatedPeople, 'delete', editingPerson);
+                        setEditingPerson(null);
+                        setView('main');
+                    }
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => { setEditingPerson(null); setView('main'); }} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-yellow-400 mb-6">Edit Team Member</h2>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Name</label>
+                                <input type="text" value={editPersonName} onChange={e => setEditPersonName(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Role</label>
+                                <input type="text" value={editPersonRole} onChange={e => setEditPersonRole(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Hourly Rate Cost to Business (€)</label>
+                                <input type="number" value={editPersonRate} onChange={e => setEditPersonRate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                <p className="text-xs text-gray-500 mt-2">Changing the rate updates the labour cost on every job this person has logged time against, past and present.</p>
+                            </div>
+
+                            <div className="pt-4 space-y-3">
+                                <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Save size={20} /> Save Changes
+                                </button>
+                                <button onClick={handleDelete} className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Trash2 size={20} /> Delete Member
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
             // --- VIEW: SETTINGS ---
             const renderSettings = () => {
                 const saveUrl = () => {
@@ -1074,8 +1143,12 @@
 
             // --- VIEW: ANALYTICS ---
             const renderAnalytics = () => {
+                const statuses = ['All', 'Quotes Submitted', 'Upcoming', 'Ongoing', 'Completed'];
+                const scopedProjects = analyticsFilter === 'All' ? projects : projects.filter(p => p.status === analyticsFilter);
+                const scopedIds = new Set(scopedProjects.map(p => p.id));
+
                 // Per-job financials
-                const jobStats = projects
+                const jobStats = scopedProjects
                     .map(p => {
                         const fin = getProjectFinancials(p.id);
                         return fin ? { id: p.id, name: p.name, status: p.status, ...fin } : null;
@@ -1093,11 +1166,11 @@
                     .sort((a, b) => b.currentProfit - a.currentProfit);
                 const maxAbsProfit = Math.max(1, ...profitJobs.map(j => Math.abs(j.currentProfit)));
 
-                // Hours per team member
+                // Hours per team member (only on the jobs in scope)
                 const hoursByPerson = people
                     .map(person => {
                         const hrs = timeLogs
-                            .filter(t => t.personId === person.id)
+                            .filter(t => t.personId === person.id && scopedIds.has(t.projectId))
                             .reduce((s, t) => s + Number(t.hours), 0);
                         return { id: person.id, name: person.name, role: person.role, hrs, cost: hrs * (person.rate || 0) };
                     })
@@ -1121,6 +1194,15 @@
                     <div className="p-5 space-y-6 pb-24 relative">
                         <CloudIndicator />
                         <h1 className="text-2xl font-bold text-yellow-400 mb-2">Analytics</h1>
+
+                        {/* Status filter */}
+                        <div className="flex gap-2 overflow-x-auto pb-2 -mx-5 px-5 scrollbar-hide" style={{ WebkitOverflowScrolling: 'touch' }}>
+                            {statuses.map(s => (
+                                <button key={s} onClick={() => setAnalyticsFilter(s)} className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-bold transition-colors ${analyticsFilter === s ? 'bg-yellow-400 text-gray-900' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}>
+                                    {s}
+                                </button>
+                            ))}
+                        </div>
 
                         {/* KPI row */}
                         <div className="grid grid-cols-2 gap-4">
@@ -1246,6 +1328,7 @@
                 if (view === 'add-project') return renderAddProject();
                 if (view === 'edit-project') return renderEditProject();
                 if (view === 'add-person') return renderAddPerson();
+                if (view === 'edit-person') return renderEditPerson();
                 if (view === 'project-detail') return renderProjectDetail();
                 if (view === 'add-time') return renderAddTime();
                 if (view === 'edit-time') return renderEditTime();
