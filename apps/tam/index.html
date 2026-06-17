@@ -144,6 +144,9 @@
             const [newPersonRole, setNewPersonRole] = useState('Electrician');
             const [newPersonRate, setNewPersonRate] = useState('');
 
+            // Settings State lifted to top level to prevent React Error
+            const [localUrlInput, setLocalUrlInput] = useState(scriptUrl || '');
+
             // Export States
             const [showAccountantExport, setShowAccountantExport] = useState(false);
             const [exportStartDate, setExportStartDate] = useState('');
@@ -745,8 +748,6 @@
 
             // --- VIEW: SETTINGS ---
             const renderSettings = () => {
-                const [localUrlInput, setLocalUrlInput] = useState(scriptUrl || '');
-
                 const saveUrl = () => {
                     setScriptUrl(localUrlInput.trim());
                     alert("Database link saved. The app will now reload.");
