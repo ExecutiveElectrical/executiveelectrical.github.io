@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Executive Electrical | Cost Tracker</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Babel for JSX compilation in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Import Map for React JSX Runtime -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime"
+        }
+    }
+    </script>
+    
+    <!-- Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #111827; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #111827; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+    </style>
+</head>
+<body class="text-gray-100">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import { 
+            Home, Briefcase, Users, PieChart, Plus, Clock, Wrench, 
+            ChevronRight, ArrowLeft, Save, Activity, Cloud, RefreshCw, 
+            UserPlus, FileText, Download, Calendar, X, FileSpreadsheet, Settings, Link
+        } from 'https://esm.sh/lucide-react@0.294.0';
+
+        // Custom Hook for Local Storage (used for the Script URL)
+        function useLocalStorage(key, initialValue) {
+            const [storedValue, setStoredValue] = useState(() => {
+                try {
+                    const item = window.localStorage.getItem(key);
+                    return item ? JSON.parse(item) : initialValue;
+                } catch (error) {
+                    return initialValue;
+                }
+            });
+            useEffect(() => {
+                try { window.localStorage.setItem(key, JSON.stringify(storedValue)); } catch (error) {}
+            }, [key, storedValue]);
+            return [storedValue, setStoredValue];
+        }
+
+        function App() {
+            // --- Core App Navigation State ---
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [activeProject, setActiveProject] = useState(null);
+            const [view, setView] = useState('main'); 
+
+            // --- Database Settings ---
+            const [scriptUrl, setScriptUrl] = useLocalStorage('ee_script_url', '');
+
+            // --- Cloud Sync State ---
+            const [loading, setLoading] = useState(true);
+            const [saving, setSaving] = useState(false);
+            const [projects, setProjects] = useState([]);
+            const [people, setPeople] = useState([]);
+            const [timeLogs, setTimeLogs] = useState([]);
+            const [materialLogs, setMaterialLogs] = useState([]);
+
+            // Fetch Data from Google Apps Script
+            useEffect(() => {
+                if (scriptUrl) {
+                    setLoading(true);
+                    fetch(scriptUrl)
+                        .then(res => res.json())
+                        .then(data => {
+                            setProjects(data.projects || []);
+                            setPeople(data.people || []);
+                            setTimeLogs(data.timeLogs || []);
+                            setMaterialLogs(data.materialLogs || []);
+                            setLoading(false);
+                        })
+                        .catch(err => {
+                            console.error("Failed to fetch data:", err);
+                            setLoading(false);
+                        });
+                } else {
+                    // Start completely empty if no URL is set
+                    setProjects([]);
+                    setPeople([]);
+                    setTimeLogs([]);
+                    setMaterialLogs([]);
+                    setLoading(false);
+                }
+            }, [scriptUrl]);
+
+            // Save Data to Google Apps Script
+            const updateCloudData = (p, pe, t, m) => {
+                if (!scriptUrl) return;
+                setSaving(true);
+                fetch(scriptUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // text/plain prevents CORS preflight errors
+                    body: JSON.stringify({ projects: p, people: pe, timeLogs: t, materialLogs: m })
+                })
+                .then(() => setSaving(false))
+                .catch(err => {
+                    console.error("Failed to save:", err);
+                    setSaving(false);
+                });
+            };
+
+            // Wrapped Setters to trigger cloud save
+            const handleSetProjects = (newProjects) => { setProjects(newProjects); updateCloudData(newProjects, people, timeLogs, materialLogs); };
+            const handleSetPeople = (newPeople) => { setPeople(newPeople); updateCloudData(projects, newPeople, timeLogs, materialLogs); };
+            const handleSetTimeLogs = (newLogs) => { setTimeLogs(newLogs); updateCloudData(projects, people, newLogs, materialLogs); };
+            const handleSetMaterialLogs = (newLogs) => { setMaterialLogs(newLogs); updateCloudData(projects, people, timeLogs, newLogs); };
+
+            // --- Form States ---
+            const [projectFilter, setProjectFilter] = useState('All');
+            const [newProjName, setNewProjName] = useState('');
+            const [newProjClient, setNewProjClient] = useState('');
+            const [newProjQuote, setNewProjQuote] = useState('');
+            const [newProjStatus, setNewProjStatus] = useState('Quotes Submitted');
+            
+            const [timePersonId, setTimePersonId] = useState('');
+            const [timeHours, setTimeHours] = useState('');
+            const [timeNotes, setTimeNotes] = useState('');
+            
+            const [matItem, setMatItem] = useState('');
+            const [matCost, setMatCost] = useState('');
+            
+            const [newPersonName, setNewPersonName] = useState('');
+            const [newPersonRole, setNewPersonRole] = useState('Electrician');
+            const [newPersonRate, setNewPersonRate] = useState('');
+
+            // Export States
+            const [showAccountantExport, setShowAccountantExport] = useState(false);
+            const [exportStartDate, setExportStartDate] = useState('');
+            const [exportEndDate, setExportEndDate] = useState('');
+
+            // Helper: Format Euros
+            const formatCurrency = (amount) => new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' }).format(amount);
+
+            // Calculate Financials
+            const getProjectFinancials = (projectId, startDate = null, endDate = null) => {
+                const project = projects.find(p => p.id === projectId);
+                if (!project) return null;
+
+                let projectTime = timeLogs.filter(t => t.projectId === projectId);
+                let projectMaterials = materialLogs.filter(m => m.projectId === projectId);
+
+                if (startDate) {
+                    projectTime = projectTime.filter(t => t.date.split('T')[0] >= startDate);
+                    projectMaterials = projectMaterials.filter(m => m.date.split('T')[0] >= startDate);
+                }
+                if (endDate) {
+                    projectTime = projectTime.filter(t => t.date.split('T')[0] <= endDate);
+                    projectMaterials = projectMaterials.filter(m => m.date.split('T')[0] <= endDate);
+                }
+
+                const labourCost = projectTime.reduce((total, log) => {
+                    const person = people.find(p => p.id === log.personId);
+                    return total + (log.hours * (person?.rate || 0));
+                }, 0);
+
+                const materialCost = projectMaterials.reduce((total, log) => total + Number(log.cost), 0);
+                const totalCost = labourCost + materialCost;
+                
+                const currentProfit = project.quote - totalCost;
+                const profitMargin = project.quote > 0 ? (currentProfit / project.quote) * 100 : 0;
+                const spendPercentage = project.quote > 0 ? (totalCost / project.quote) * 100 : 0;
+
+                return { labourCost, materialCost, totalCost, currentProfit, profitMargin, spendPercentage, quote: project.quote };
+            };
+
+            // Cloud Status Indicator
+            const CloudIndicator = () => {
+                if (!scriptUrl) return <div className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-red-500"><Cloud size={12}/> Offline</div>;
+                return (
+                    <div className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                        {saving ? <><RefreshCw size={12} className="animate-spin text-yellow-400"/> Saving...</> : <><Cloud size={12} className="text-gray-600"/> Synced</>}
+                    </div>
+                );
+            };
+
+            // --- CSV EXPORT FUNCTIONS ---
+            const exportAccountantCSV = () => {
+                let csvContent = "data:text/csv;charset=utf-8,";
+                csvContent += `Accountant Report (${exportStartDate || 'All Time'} to ${exportEndDate || 'All Time'})\n\n`;
+                csvContent += "Project Name,Client,Status,Quoted (EUR),Labour Cost (EUR),Material Cost (EUR),Total Cost (EUR),Current Profit (EUR)\n";
+
+                projects.forEach(p => {
+                    const fin = getProjectFinancials(p.id, exportStartDate, exportEndDate);
+                    if (fin) {
+                        csvContent += `"${p.name}","${p.client}","${p.status}",${fin.quote},${fin.labourCost},${fin.materialCost},${fin.totalCost},${fin.currentProfit}\n`;
+                    }
+                });
+
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", `Accountant_Report_${new Date().toISOString().split('T')[0]}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                setShowAccountantExport(false);
+            };
+
+            const exportProjectCSV = () => {
+                if (!activeProject) return;
+                let csvContent = "data:text/csv;charset=utf-8,";
+                csvContent += `Project:,${activeProject.name}\n`;
+                csvContent += `Client:,${activeProject.client}\n`;
+                csvContent += `Status:,${activeProject.status}\n`;
+                csvContent += `Quote:,€${activeProject.quote}\n\n`;
+
+                csvContent += `--- TIME LOGS ---\n`;
+                csvContent += `Date,Person,Hours,Cost (EUR),Notes\n`;
+                
+                const pTime = timeLogs.filter(t => t.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+                pTime.forEach(t => {
+                    const person = people.find(p => p.id === t.personId);
+                    const cost = t.hours * (person?.rate || 0);
+                    const dateObj = new Date(t.date);
+                    const formattedDate = `${dateObj.getDate().toString().padStart(2, '0')}/${(dateObj.getMonth()+1).toString().padStart(2, '0')}/${dateObj.getFullYear()}`;
+                    csvContent += `${formattedDate},"${person?.name || 'Unknown'}",${t.hours},${cost},"${t.notes || ''}"\n`;
+                });
+
+                csvContent += `\n--- MATERIAL LOGS ---\n`;
+                csvContent += `Date,Item Description,Cost (EUR)\n`;
+                
+                const pMat = materialLogs.filter(m => m.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+                pMat.forEach(m => {
+                    const dateObj = new Date(m.date);
+                    const formattedDate = `${dateObj.getDate().toString().padStart(2, '0')}/${(dateObj.getMonth()+1).toString().padStart(2, '0')}/${dateObj.getFullYear()}`;
+                    csvContent += `${formattedDate},"${m.item}",${m.cost}\n`;
+                });
+
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", `Project_Report_${activeProject.name.replace(/\s+/g, '_')}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            // --- VIEW: HOME / DASHBOARD ---
+            const renderDashboard = () => {
+                const ongoingProjects = projects.filter(p => p.status === 'Ongoing');
+                const totalPipeline = projects.filter(p => p.status === 'Quotes Submitted' || p.status === 'Upcoming').reduce((sum, p) => sum + Number(p.quote), 0);
+                
+                return (
+                    <div className="p-5 space-y-6 pb-24 relative">
+                        <CloudIndicator />
+                        <header className="mb-4 pr-12">
+                            <h1 className="text-[16px] min-[375px]:text-[18px] sm:text-[22px] font-black text-white leading-tight whitespace-nowrap tracking-tighter">
+                                <span className="text-yellow-400">T</span>imes <span className="text-yellow-400">I</span>nventory <span className="text-yellow-400">T</span>racking <span className="text-yellow-400">S</span>ystem
+                            </h1>
+                            <p className="text-gray-400 text-[13px] mt-1 italic font-medium">
+                                <span className="text-yellow-400 font-bold tracking-widest">[+][+]</span> "Keeping your jobs covered."
+                            </p>
+                        </header>
+
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
+                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Active Jobs</h3>
+                                <p className="text-3xl font-bold text-white">{ongoingProjects.length}</p>
+                            </div>
+                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
+                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Pipeline (Quotes)</h3>
+                                <p className="text-xl font-bold text-blue-400">{formatCurrency(totalPipeline)}</p>
+                            </div>
+                        </div>
+
+                        {/* Accountant Export Button */}
+                        <button onClick={() => setShowAccountantExport(true)} className="w-full bg-gray-800 border border-gray-700 hover:border-yellow-400 text-gray-300 py-3 rounded-xl flex items-center justify-center gap-2 transition-colors text-sm font-bold shadow-sm">
+                            <FileSpreadsheet className="text-yellow-400" size={18} />
+                            Accountant Excel Export
+                        </button>
+
+                        <div>
+                            <h2 className="text-lg font-bold text-white mb-3 flex items-center gap-2"><Activity size={18} className="text-yellow-400"/> Health Check (Ongoing)</h2>
+                            <div className="space-y-4">
+                                {ongoingProjects.length === 0 && <p className="text-gray-500 text-sm p-4 bg-gray-800/50 rounded-xl border border-gray-800 text-center">No ongoing jobs. Update a status in the Jobs tab.</p>}
+                                
+                                {ongoingProjects.map(project => {
+                                    const fin = getProjectFinancials(project.id);
+                                    let statusColor = 'bg-green-500';
+                                    let statusText = 'Healthy';
+                                    if (fin.spendPercentage > 85 && fin.spendPercentage <= 100) { statusColor = 'bg-orange-500'; statusText = 'Overspend Risk'; }
+                                    if (fin.spendPercentage > 100) { statusColor = 'bg-red-500'; statusText = 'Loss Making'; }
+
+                                    return (
+                                        <div key={project.id} onClick={() => { setActiveProject(project); setView('project-detail'); }} className="bg-gray-800 p-4 rounded-xl border border-gray-700 active:bg-gray-700 transition-colors cursor-pointer shadow-md">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <h3 className="font-bold text-white">{project.name}</h3>
+                                                <span className={`text-[10px] font-bold px-2 py-1 rounded-full text-white ${statusColor}`}>{statusText}</span>
+                                            </div>
+                                            <div className="flex justify-between text-sm mb-2">
+                                                <span className="text-gray-400">Margin: <span className={fin.profitMargin > 20 ? 'text-green-400' : fin.profitMargin > 0 ? 'text-orange-400' : 'text-red-400'}>{fin.profitMargin.toFixed(1)}%</span></span>
+                                                <span className="text-white font-bold">{formatCurrency(fin.currentProfit)}</span>
+                                            </div>
+                                            <div className="w-full bg-gray-700 rounded-full h-2">
+                                                <div className={`${statusColor} h-2 rounded-full`} style={{ width: `${Math.min(fin.spendPercentage, 100)}%` }}></div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Accountant Export Modal */}
+                        {showAccountantExport && (
+                            <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                                <div className="bg-gray-800 border border-gray-700 rounded-2xl w-full max-w-sm p-6 shadow-2xl relative">
+                                    <button onClick={() => setShowAccountantExport(false)} className="absolute top-4 right-4 text-gray-400 hover:text-white">
+                                        <X size={20} />
+                                    </button>
+                                    <h3 className="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                                        <FileSpreadsheet className="text-yellow-400" size={24} /> Export Report
+                                    </h3>
+                                    <p className="text-sm text-gray-400 mb-6">Select a date range to generate an Excel-compatible report of all projects and costs.</p>
+                                    
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">Start Date (Optional)</label>
+                                            <input type="date" value={exportStartDate} onChange={e => setExportStartDate(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white focus:border-yellow-400 outline-none" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">End Date (Optional)</label>
+                                            <input type="date" value={exportEndDate} onChange={e => setExportEndDate(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white focus:border-yellow-400 outline-none" />
+                                        </div>
+                                        
+                                        <button onClick={exportAccountantCSV} className="w-full bg-yellow-400 text-gray-900 hover:bg-yellow-300 font-bold py-3 rounded-xl mt-4 flex justify-center items-center gap-2">
+                                            <Download size={18} /> Download CSV
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            // --- VIEW: PROJECTS LIST ---
+            const renderProjects = () => {
+                const statuses = ['All', 'Quotes Submitted', 'Upcoming', 'Ongoing', 'Completed'];
+                const filtered = projectFilter === 'All' ? projects : projects.filter(p => p.status === projectFilter);
+
+                const updateProjectStatus = (projectId, newStatus) => {
+                    const updatedProjects = projects.map(p => p.id === projectId ? { ...p, status: newStatus } : p);
+                    handleSetProjects(updatedProjects);
+                };
+
+                return (
+                    <div className="p-5 space-y-4 pb-24 relative">
+                        <CloudIndicator />
+                        <div className="flex justify-between items-center mb-4">
+                            <h1 className="text-2xl font-bold text-yellow-400">Jobs</h1>
+                            <button onClick={() => setView('add-project')} className="bg-yellow-400 text-gray-900 px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 shadow-lg shadow-yellow-400/20">
+                                <Plus size={16} /> New Job
+                            </button>
+                        </div>
+
+                        <div className="flex gap-2 overflow-x-auto pb-2 -mx-5 px-5 scrollbar-hide" style={{ WebkitOverflowScrolling: 'touch' }}>
+                            {statuses.map(s => (
+                                <button key={s} onClick={() => setProjectFilter(s)} className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-bold transition-colors ${projectFilter === s ? 'bg-yellow-400 text-gray-900' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}>
+                                    {s}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="space-y-3">
+                            {filtered.map(project => (
+                                <div key={project.id} onClick={() => { setActiveProject(project); setView('project-detail'); }} className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-between items-center active:bg-gray-700 transition-colors cursor-pointer shadow-sm">
+                                    <div className="flex-1">
+                                        <h3 className="font-bold text-white text-lg">{project.name}</h3>
+                                        <p className="text-sm text-gray-400 mb-2">{project.client} • {formatCurrency(project.quote)}</p>
+                                        
+                                        <div onClick={(e) => e.stopPropagation()} className="inline-block relative">
+                                            <select 
+                                                value={project.status}
+                                                onChange={(e) => updateProjectStatus(project.id, e.target.value)}
+                                                className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1.5 pr-6 rounded outline-none cursor-pointer appearance-none border border-transparent hover:border-gray-500 transition-colors ${
+                                                    project.status === 'Ongoing' ? 'text-green-400 bg-green-400/10' :
+                                                    project.status === 'Completed' ? 'text-gray-400 bg-gray-400/10' :
+                                                    'text-blue-400 bg-blue-400/10'
+                                                }`}
+                                            >
+                                                <option value="Quotes Submitted" className="bg-gray-800 text-white">Quotes Submitted</option>
+                                                <option value="Upcoming" className="bg-gray-800 text-white">Upcoming</option>
+                                                <option value="Ongoing" className="bg-gray-800 text-white">Ongoing</option>
+                                                <option value="Completed" className="bg-gray-800 text-white">Completed</option>
+                                            </select>
+                                            <div className="absolute right-1 top-1/2 -translate-y-1/2 pointer-events-none opacity-70">
+                                                <ChevronRight size={12} className="rotate-90" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <ChevronRight className="text-gray-500 ml-2" />
+                                </div>
+                            ))}
+                            {filtered.length === 0 && <p className="text-center text-gray-500 py-10 bg-gray-800/30 rounded-xl border border-gray-800">No jobs found.</p>}
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: ADD NEW PROJECT ---
+            const renderAddProject = () => {
+                const handleSave = () => {
+                    if (!newProjName || !newProjQuote) return alert('Please provide a Job Name and Quote amount.');
+                    const newProject = {
+                        id: 'proj_' + Date.now().toString(),
+                        name: newProjName, client: newProjClient, quote: Number(newProjQuote), status: newProjStatus, date: new Date().toISOString()
+                    };
+                    handleSetProjects([...projects, newProject]);
+                    setNewProjName(''); setNewProjClient(''); setNewProjQuote(''); setNewProjStatus('Quotes Submitted');
+                    setView('main'); setActiveTab('projects');
+                };
+
+                return (
+                    <div className="p-5 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => setView('main')} className="text-gray-400 mb-6 flex items-center gap-2 hover:text-white"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-yellow-400 mb-6">Create New Job</h2>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Job Name / Reference</label>
+                                <input type="text" value={newProjName} onChange={e => setNewProjName(e.target.value)} placeholder="e.g. Unit 4 Rewire" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Client Name</label>
+                                <input type="text" value={newProjClient} onChange={e => setNewProjClient(e.target.value)} placeholder="e.g. Sarah Jenkins" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Quoted Value (€)</label>
+                                <input type="number" value={newProjQuote} onChange={e => setNewProjQuote(e.target.value)} placeholder="e.g. 8500" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Current Status</label>
+                                <select value={newProjStatus} onChange={e => setNewProjStatus(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white appearance-none focus:border-yellow-400 focus:outline-none">
+                                    <option value="Quotes Submitted">Quote Submitted</option>
+                                    <option value="Upcoming">Upcoming</option>
+                                    <option value="Ongoing">Ongoing (Active)</option>
+                                    <option value="Completed">Completed</option>
+                                </select>
+                            </div>
+                            
+                            <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2 hover:bg-yellow-300">
+                                <Save size={20} /> Save Job
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: PROJECT DETAILS & ANALYTICS ---
+            const renderProjectDetail = () => {
+                if (!activeProject) return null;
+                const fin = getProjectFinancials(activeProject.id);
+                const pTimeLogs = timeLogs.filter(t => t.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+                const pMaterialLogs = materialLogs.filter(m => m.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+
+                const updateStatus = (newStatus) => {
+                    handleSetProjects(projects.map(p => p.id === activeProject.id ? { ...p, status: newStatus } : p));
+                    setActiveProject({...activeProject, status: newStatus});
+                };
+
+                return (
+                    <div className="flex flex-col min-h-screen bg-gray-900 pb-24">
+                        <header className="bg-gray-800 border-b border-gray-700 p-4 sticky top-0 z-10 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <button onClick={() => setView('main')} className="p-2 -ml-2 text-gray-400 hover:text-white"><ArrowLeft size={24} /></button>
+                                <div>
+                                    <h1 className="text-lg font-bold text-white leading-tight">{activeProject.name}</h1>
+                                    <p className="text-xs text-yellow-400">{activeProject.status}</p>
+                                </div>
+                            </div>
+                            <button onClick={exportProjectCSV} className="p-2 text-gray-400 hover:text-yellow-400 transition-colors" title="Export Project CSV">
+                                <Download size={22} />
+                            </button>
+                        </header>
+
+                        <div className="p-4 space-y-6">
+                            <div className="bg-gray-800 rounded-xl p-2 border border-gray-700 flex relative">
+                                <select value={activeProject.status} onChange={e => updateStatus(e.target.value)} className="bg-transparent text-white w-full p-2 outline-none font-bold text-sm appearance-none">
+                                    <option value="Quotes Submitted" className="bg-gray-800">Status: Quote Submitted</option>
+                                    <option value="Upcoming" className="bg-gray-800">Status: Upcoming</option>
+                                    <option value="Ongoing" className="bg-gray-800">Status: Ongoing (Active)</option>
+                                    <option value="Completed" className="bg-gray-800">Status: Completed</option>
+                                </select>
+                                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                                    <ChevronRight size={16} className="rotate-90" />
+                                </div>
+                            </div>
+
+                            <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 shadow-lg">
+                                <h3 className="text-gray-400 text-xs font-bold uppercase mb-4 flex items-center gap-2"><PieChart size={14}/> Financial Analytics</h3>
+                                <div className="flex justify-between items-end mb-2">
+                                    <div>
+                                        <p className="text-sm text-gray-400">Total Spend</p>
+                                        <p className="text-2xl font-bold text-white">{formatCurrency(fin.totalCost)}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-sm text-gray-400">Quoted</p>
+                                        <p className="text-lg font-bold text-white">{formatCurrency(fin.quote)}</p>
+                                    </div>
+                                </div>
+                                
+                                <div className="w-full bg-gray-700 rounded-full h-3 mb-1 overflow-hidden">
+                                    <div className={`h-full ${fin.spendPercentage > 85 ? 'bg-red-500' : 'bg-blue-500'}`} style={{ width: `${Math.min(fin.spendPercentage, 100)}%` }}></div>
+                                </div>
+                                <p className="text-right text-xs text-gray-400 mb-6">{fin.spendPercentage.toFixed(1)}% of budget used</p>
+
+                                <div className="grid grid-cols-2 gap-4 border-t border-gray-700 pt-4">
+                                    <div>
+                                        <p className="text-xs text-gray-400 mb-1">Labour Cost</p>
+                                        <p className="font-bold text-orange-400">{formatCurrency(fin.labourCost)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-400 mb-1">Material Cost</p>
+                                        <p className="font-bold text-purple-400">{formatCurrency(fin.materialCost)}</p>
+                                    </div>
+                                </div>
+
+                                <div className={`mt-4 p-3 rounded-lg border ${fin.currentProfit > 0 ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'} flex justify-between items-center`}>
+                                    <div>
+                                        <p className={`text-xs font-bold uppercase ${fin.currentProfit > 0 ? 'text-green-400' : 'text-red-400'}`}>Current Profit</p>
+                                        <p className={`text-xl font-bold ${fin.currentProfit > 0 ? 'text-green-500' : 'text-red-500'}`}>{formatCurrency(fin.currentProfit)}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-xs text-gray-400">Margin</p>
+                                        <p className="text-lg font-bold text-white">{fin.profitMargin.toFixed(1)}%</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <button onClick={() => setView('add-time')} className="bg-gray-800 border border-gray-700 hover:border-yellow-400 text-white p-4 rounded-xl flex flex-col items-center justify-center gap-2 transition-colors shadow-sm">
+                                    <Clock className="text-yellow-400" size={24} />
+                                    <span className="font-bold text-sm">Log Time</span>
+                                </button>
+                                <button onClick={() => setView('add-material')} className="bg-gray-800 border border-gray-700 hover:border-yellow-400 text-white p-4 rounded-xl flex flex-col items-center justify-center gap-2 transition-colors shadow-sm">
+                                    <Wrench className="text-yellow-400" size={24} />
+                                    <span className="font-bold text-sm">Log Materials</span>
+                                </button>
+                            </div>
+
+                            <div className="space-y-4">
+                                <h3 className="font-bold text-white border-b border-gray-700 pb-2 flex items-center gap-2"><FileText size={16}/> Recent Logs</h3>
+                                
+                                {pTimeLogs.map(log => {
+                                    const person = people.find(p => p.id === log.personId);
+                                    return (
+                                        <div key={log.id} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center">
+                                            <div className="flex gap-3 items-center">
+                                                <div className="bg-orange-500/20 p-2 rounded-full"><Clock size={16} className="text-orange-400"/></div>
+                                                <div>
+                                                    <p className="font-bold text-white text-sm">{person?.name || 'Unknown User'}</p>
+                                                    <p className="text-xs text-gray-400">{new Date(log.date).toLocaleDateString('en-GB')} • {log.notes}</p>
+                                                </div>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="font-bold text-white">{log.hours} hrs</p>
+                                                <p className="text-xs text-gray-400">{formatCurrency(log.hours * (person?.rate || 0))}</p>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+
+                                {pMaterialLogs.map(log => (
+                                    <div key={log.id} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center">
+                                        <div className="flex gap-3 items-center">
+                                            <div className="bg-purple-500/20 p-2 rounded-full"><Wrench size={16} className="text-purple-400"/></div>
+                                            <div>
+                                                <p className="font-bold text-white text-sm truncate max-w-[150px]">{log.item}</p>
+                                                <p className="text-xs text-gray-400">{new Date(log.date).toLocaleDateString('en-GB')}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="font-bold text-white">{formatCurrency(log.cost)}</p>
+                                        </div>
+                                    </div>
+                                ))}
+
+                                {(pTimeLogs.length === 0 && pMaterialLogs.length === 0) && (
+                                    <p className="text-center text-gray-500 text-sm py-4">No time or materials logged yet.</p>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: LOG TIME ---
+            const renderAddTime = () => {
+                const selectedPersonId = timePersonId || (people[0]?.id || '');
+
+                const handleSave = () => {
+                    if(!selectedPersonId || !timeHours) return alert('Select a person and enter hours.');
+                    const newLog = { id: 'time_' + Date.now().toString(), projectId: activeProject.id, personId: selectedPersonId, hours: Number(timeHours), date: new Date().toISOString(), notes: timeNotes };
+                    handleSetTimeLogs([newLog, ...timeLogs]);
+                    setTimeHours(''); setTimeNotes(''); setTimePersonId('');
+                    setView('project-detail');
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => setView('project-detail')} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-white mb-6">Log Time for<br/><span className="text-yellow-400 text-lg">{activeProject?.name}</span></h2>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Team Member</label>
+                                <select value={selectedPersonId} onChange={e => setTimePersonId(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white appearance-none focus:border-yellow-400 outline-none">
+                                    {people.map(p => <option key={p.id} value={p.id}>{p.name} (€{p.rate}/hr)</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Hours Worked</label>
+                                <input type="number" step="0.5" value={timeHours} onChange={e => setTimeHours(e.target.value)} placeholder="e.g. 4.5" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Notes / Task (Optional)</label>
+                                <input type="text" value={timeNotes} onChange={e => setTimeNotes(e.target.value)} placeholder="e.g. 2nd fix sockets" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
+                                <Save size={20} /> Save Time Entry
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: LOG MATERIAL ---
+            const renderAddMaterial = () => {
+                const handleSave = () => {
+                    if(!matItem || !matCost) return alert('Enter a description and cost.');
+                    const newLog = { id: 'mat_' + Date.now().toString(), projectId: activeProject.id, item: matItem, cost: Number(matCost), date: new Date().toISOString() };
+                    handleSetMaterialLogs([newLog, ...materialLogs]);
+                    setMatItem(''); setMatCost('');
+                    setView('project-detail');
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => setView('project-detail')} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-white mb-6">Log Materials for<br/><span className="text-yellow-400 text-lg">{activeProject?.name}</span></h2>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Material / Receipt Description</label>
+                                <input type="text" value={matItem} onChange={e => setMatItem(e.target.value)} placeholder="e.g. CEF Invoice #1234" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Total Cost (€)</label>
+                                <input type="number" step="0.01" value={matCost} onChange={e => setMatCost(e.target.value)} placeholder="e.g. 450.00" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
+                                <Save size={20} /> Save Material Entry
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: TEAM ---
+            const renderTeam = () => {
+                return (
+                    <div className="p-5 space-y-4 pb-24 relative">
+                        <CloudIndicator />
+                        <div className="flex justify-between items-center mb-6">
+                            <h1 className="text-2xl font-bold text-yellow-400">Team & Rates</h1>
+                        </div>
+                        
+                        <div className="space-y-3">
+                            {people.map(person => (
+                                <div key={person.id} className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-between items-center">
+                                    <div>
+                                        <h3 className="font-bold text-white text-lg">{person.name}</h3>
+                                        <p className="text-sm text-gray-400">{person.role}</p>
+                                    </div>
+                                    <div className="text-right bg-gray-900 py-1 px-3 rounded-lg border border-gray-700">
+                                        <p className="font-bold text-yellow-400 text-lg">€{person.rate}<span className="text-xs text-gray-400">/hr</span></p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        
+                        <button onClick={() => setView('add-person')} className="w-full border-2 border-dashed border-gray-700 text-gray-400 rounded-xl py-4 font-bold flex justify-center items-center gap-2 hover:border-yellow-400 hover:text-yellow-400 transition-colors mt-4">
+                            <UserPlus size={20} /> Add Team Member
+                        </button>
+                    </div>
+                );
+            };
+
+            // --- VIEW: ADD PERSON ---
+            const renderAddPerson = () => {
+                const handleSave = () => {
+                    if (!newPersonName || !newPersonRate) return alert('Provide Name and Rate.');
+                    const newPerson = { id: 'usr_' + Date.now().toString(), name: newPersonName, role: newPersonRole, rate: Number(newPersonRate) };
+                    handleSetPeople([...people, newPerson]);
+                    setNewPersonName(''); setNewPersonRole('Electrician'); setNewPersonRate('');
+                    setView('main');
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => setView('main')} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-yellow-400 mb-6">Add Team Member</h2>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Name</label>
+                                <input type="text" value={newPersonName} onChange={e => setNewPersonName(e.target.value)} placeholder="e.g. Paul (Apprentice)" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Role</label>
+                                <input type="text" value={newPersonRole} onChange={e => setNewPersonRole(e.target.value)} placeholder="e.g. Electrician" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Hourly Rate Cost to Business (€)</label>
+                                <input type="number" value={newPersonRate} onChange={e => setNewPersonRate(e.target.value)} placeholder="e.g. 25" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
+                                <Save size={20} /> Save Person
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: SETTINGS ---
+            const renderSettings = () => {
+                const [localUrlInput, setLocalUrlInput] = useState(scriptUrl || '');
+
+                const saveUrl = () => {
+                    setScriptUrl(localUrlInput.trim());
+                    alert("Database link saved. The app will now reload.");
+                    window.location.reload();
+                };
+
+                return (
+                    <div className="p-5 space-y-6 pb-24 relative">
+                        <CloudIndicator />
+                        <h1 className="text-2xl font-bold text-yellow-400 mb-6">Settings</h1>
+
+                        <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 space-y-4 shadow-lg">
+                            <h3 className="font-bold text-white flex items-center gap-2"><Link size={18} className="text-yellow-400"/> Database Connection</h3>
+                            <p className="text-sm text-gray-400 leading-relaxed">
+                                Enter your Google Apps Script Web App URL below to connect this device to your cloud database. Because this is saved locally on your phone, hosting the app on GitHub Pages is perfectly secure.
+                            </p>
+                            
+                            <div>
+                                <input 
+                                    type="text" 
+                                    value={localUrlInput} 
+                                    onChange={e => setLocalUrlInput(e.target.value)} 
+                                    placeholder="https://script.google.com/macros/s/..." 
+                                    className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-yellow-400 outline-none font-mono" 
+                                />
+                            </div>
+                            
+                            <button onClick={saveUrl} className="w-full bg-yellow-400 text-gray-900 hover:bg-yellow-300 font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">
+                                <Save size={18} /> Save & Connect
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // ==========================================
+            // 4. MAIN RENDER ROUTING
+            // ==========================================
+            const renderContent = () => {
+                if (!scriptUrl && activeTab !== 'settings') {
+                    return (
+                        <div className="h-screen flex flex-col items-center justify-center p-6 text-center">
+                            <Cloud className="text-gray-600 mb-4" size={48} />
+                            <h2 className="text-xl font-bold text-white mb-2">No Database Connected</h2>
+                            <p className="text-gray-400 text-sm mb-6">Please go to Settings to enter your Google Apps Script URL.</p>
+                            <button onClick={() => setActiveTab('settings')} className="bg-yellow-400 text-gray-900 font-bold py-3 px-6 rounded-xl">Go to Settings</button>
+                        </div>
+                    );
+                }
+
+                if (loading && scriptUrl) return <div className="h-screen flex flex-col items-center justify-center text-yellow-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Loading Data...</p></div>;
+                
+                if (view === 'add-project') return renderAddProject();
+                if (view === 'add-person') return renderAddPerson();
+                if (view === 'project-detail') return renderProjectDetail();
+                if (view === 'add-time') return renderAddTime();
+                if (view === 'add-material') return renderAddMaterial();
+                
+                switch(activeTab) {
+                    case 'dashboard': return renderDashboard();
+                    case 'projects': return renderProjects();
+                    case 'team': return renderTeam();
+                    case 'settings': return renderSettings();
+                    default: return renderDashboard();
+                }
+            };
+
+            const showNav = view === 'main' && (!loading || !scriptUrl);
+
+            return (
+                <div className="bg-gray-900 min-h-screen max-w-md mx-auto relative shadow-2xl border-x border-gray-800">
+                    <div className="h-full overflow-y-auto">
+                        {renderContent()}
+                    </div>
+
+                    {showNav && (
+                        <nav className="fixed bottom-0 w-full max-w-md bg-gray-800 border-t border-gray-700 px-6 py-3 flex justify-between items-center z-40 pb-safe">
+                            <NavItem icon={<Home />} label="Home" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+                            <NavItem icon={<Briefcase />} label="Jobs" active={activeTab === 'projects'} onClick={() => setActiveTab('projects')} />
+                            <NavItem icon={<Users />} label="Team" active={activeTab === 'team'} onClick={() => setActiveTab('team')} />
+                            <NavItem icon={<Settings />} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+                        </nav>
+                    )}
+                </div>
+            );
+        }
+
+        function NavItem({ icon, label, active, onClick }) {
+            return (
+                <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-colors ${active ? 'text-yellow-400' : 'text-gray-500 hover:text-gray-300'}`}>
+                    {React.cloneElement(icon, { size: active ? 24 : 22, strokeWidth: active ? 2.5 : 2 })}
+                    <span className="text-[10px] font-bold tracking-wide">{label}</span>
+                </button>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
