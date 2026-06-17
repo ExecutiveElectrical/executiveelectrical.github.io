@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -42,12 +41,12 @@
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+        import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
         import { 
             Home, Briefcase, Users, PieChart, Plus, Clock, Wrench, 
             ChevronRight, ArrowLeft, Save, Activity, Cloud, RefreshCw, 
-            UserPlus, FileText, Download, Calendar, X, FileSpreadsheet, Settings, Link, Edit, Trash2
+            UserPlus, FileText, Download, Calendar, X, FileSpreadsheet, Settings, Link, Edit, Trash2, BarChart3, TrendingUp
         } from 'https://esm.sh/lucide-react@0.294.0';
 
         // Custom Hook for Local Storage (used for the Script URL)
@@ -82,24 +81,45 @@
             const [people, setPeople] = useState([]);
             const [timeLogs, setTimeLogs] = useState([]);
             const [materialLogs, setMaterialLogs] = useState([]);
+            
+            // Ref to track saving status inside intervals
+            const isSavingRef = useRef(false);
+            useEffect(() => { isSavingRef.current = saving; }, [saving]);
 
-            // Fetch Data from Google Apps Script
+            // --- Function to fetch latest data silently ---
+            const fetchLatestData = async (showLoadingScreen = false) => {
+                if (!scriptUrl) return;
+                if (showLoadingScreen) setLoading(true);
+                
+                try {
+                    const res = await fetch(scriptUrl);
+                    const data = await res.json();
+                    
+                    // Only update if we aren't currently trying to save something
+                    if (!isSavingRef.current) {
+                        setProjects(data.projects || []);
+                        setPeople(data.people || []);
+                        setTimeLogs(data.timeLogs || []);
+                        setMaterialLogs(data.materialLogs || []);
+                    }
+                    if (showLoadingScreen) setLoading(false);
+                } catch (err) {
+                    console.error("Failed to fetch data:", err);
+                    if (showLoadingScreen) setLoading(false);
+                }
+            };
+
+            // Fetch Data on Load & Start Auto-Sync Polling
             useEffect(() => {
                 if (scriptUrl) {
-                    setLoading(true);
-                    fetch(scriptUrl)
-                        .then(res => res.json())
-                        .then(data => {
-                            setProjects(data.projects || []);
-                            setPeople(data.people || []);
-                            setTimeLogs(data.timeLogs || []);
-                            setMaterialLogs(data.materialLogs || []);
-                            setLoading(false);
-                        })
-                        .catch(err => {
-                            console.error("Failed to fetch data:", err);
-                            setLoading(false);
-                        });
+                    fetchLatestData(true); // Initial load with loading screen
+                    
+                    // Auto-sync every 10 seconds in the background
+                    const intervalId = setInterval(() => {
+                        fetchLatestData(false);
+                    }, 10000); 
+                    
+                    return () => clearInterval(intervalId); // Cleanup
                 } else {
                     // Start completely empty if no URL is set
                     setProjects([]);
@@ -110,27 +130,48 @@
                 }
             }, [scriptUrl]);
 
-            // Save Data to Google Apps Script
-            const updateCloudData = (p, pe, t, m) => {
-                if (!scriptUrl) return;
+            // Pull the latest data the moment an add/edit screen opens, so you are
+            // always working from current figures (e.g. the newest rates and team
+            // members) before logging or editing anything. Runs silently.
+            useEffect(() => {
+                const refreshOnOpen = [
+                    'add-project', 'edit-project', 'add-person',
+                    'add-time', 'edit-time', 'add-material', 'edit-material'
+                ];
+                if (scriptUrl && refreshOnOpen.includes(view)) {
+                    fetchLatestData(false);
+                }
+            }, [view]);
+
+            // Save a SINGLE record change to Google Apps Script.
+            // We never push the whole database, so two people editing different
+            // records at the same time can never overwrite each other. The server
+            // applies this one change under a lock and we then pull the merged truth.
+            const pushOp = async (action, type, record) => {
+                if (!scriptUrl || !record) return;
                 setSaving(true);
-                fetch(scriptUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({ projects: p, people: pe, timeLogs: t, materialLogs: m })
-                })
-                .then(() => setSaving(false))
-                .catch(err => {
+                try {
+                    await fetch(scriptUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify({ action, type, record })
+                    });
+                } catch (err) {
                     console.error("Failed to save:", err);
+                    alert("Could not reach the cloud. Tap Refresh to check whether your change saved.");
+                } finally {
                     setSaving(false);
-                });
+                    // Reconcile with the server so we also pick up the other person's changes.
+                    fetchLatestData(false);
+                }
             };
 
-            // Wrapped Setters to trigger cloud save
-            const handleSetProjects = (newProjects) => { setProjects(newProjects); updateCloudData(newProjects, people, timeLogs, materialLogs); };
-            const handleSetPeople = (newPeople) => { setPeople(newPeople); updateCloudData(projects, newPeople, timeLogs, materialLogs); };
-            const handleSetTimeLogs = (newLogs) => { setTimeLogs(newLogs); updateCloudData(projects, people, newLogs, materialLogs); };
-            const handleSetMaterialLogs = (newLogs) => { setMaterialLogs(newLogs); updateCloudData(projects, people, timeLogs, newLogs); };
+            // Wrapped Setters: update local state optimistically, then push the one
+            // record that changed. action is 'upsert' (add/edit) or 'delete'.
+            const handleSetProjects = (newProjects, action, record) => { setProjects(newProjects); pushOp(action, 'projects', record); };
+            const handleSetPeople = (newPeople, action, record) => { setPeople(newPeople); pushOp(action, 'people', record); };
+            const handleSetTimeLogs = (newLogs, action, record) => { setTimeLogs(newLogs); pushOp(action, 'timeLogs', record); };
+            const handleSetMaterialLogs = (newLogs, action, record) => { setMaterialLogs(newLogs); pushOp(action, 'materialLogs', record); };
 
             // --- Form States ---
             const [projectFilter, setProjectFilter] = useState('All');
@@ -144,19 +185,27 @@
             const [editProjClient, setEditProjClient] = useState('');
             const [editProjQuote, setEditProjQuote] = useState('');
             
-            // --- Edit Log States ---
-            const [editingTimeLog, setEditingTimeLog] = useState(null);
-
-            // --- Log Time States ---
+            // --- Log & Edit Time States ---
             const [timeDate, setTimeDate] = useState(new Date().toISOString().split('T')[0]); // Default today
             const [timePersonId, setTimePersonId] = useState('');
             const [timeHours, setTimeHours] = useState('');
             const [timeNotes, setTimeNotes] = useState('');
+            const [editingTimeLog, setEditingTimeLog] = useState(null);
+            const [editTimeDate, setEditTimeDate] = useState('');
+            const [editTimePersonId, setEditTimePersonId] = useState('');
+            const [editTimeHours, setEditTimeHours] = useState('');
+            const [editTimeNotes, setEditTimeNotes] = useState('');
             
             // --- Log Material States ---
             const [matDate, setMatDate] = useState(new Date().toISOString().split('T')[0]); // Default today
             const [matItem, setMatItem] = useState('');
             const [matCost, setMatCost] = useState('');
+
+            // --- Edit Material States ---
+            const [editingMaterialLog, setEditingMaterialLog] = useState(null);
+            const [editMatDate, setEditMatDate] = useState('');
+            const [editMatItem, setEditMatItem] = useState('');
+            const [editMatCost, setEditMatCost] = useState('');
             
             // --- Team Member States ---
             const [newPersonName, setNewPersonName] = useState('');
@@ -204,13 +253,16 @@
                 return { labourCost, materialCost, totalCost, currentProfit, profitMargin, spendPercentage, quote: project.quote };
             };
 
-            // Cloud Status Indicator
+            // Cloud Status Indicator (Now Clickable)
             const CloudIndicator = () => {
                 if (!scriptUrl) return <div className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-red-500"><Cloud size={12}/> Offline</div>;
                 return (
-                    <div className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                        {saving ? <><RefreshCw size={12} className="animate-spin text-yellow-400"/> Saving...</> : <><Cloud size={12} className="text-gray-600"/> Synced</>}
-                    </div>
+                    <button 
+                        onClick={() => fetchLatestData(true)}
+                        className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-white transition-colors bg-gray-800 px-2 py-1 rounded-lg border border-gray-700 shadow-md"
+                    >
+                        {saving ? <><RefreshCw size={12} className="animate-spin text-yellow-400"/> Saving...</> : <><RefreshCw size={12} className="text-blue-400"/> Refresh</>}
+                    </button>
                 );
             };
 
@@ -289,7 +341,7 @@
                                 <span className="text-yellow-400">T</span>imes <span className="text-yellow-400">I</span>nventory <span className="text-yellow-400">T</span>racking <span className="text-yellow-400">S</span>ystem
                             </h1>
                             <p className="text-gray-400 text-[13px] mt-1 italic font-medium">
-                                <span className="text-yellow-400 font-bold tracking-widest">[+][+]</span> "Keeping your jobs covered."
+                                <span className="text-yellow-400 font-bold tracking-widest">[+][+]</span> "Because Bigger Jobs Need Better Control."
                             </p>
                         </header>
 
@@ -380,8 +432,9 @@
                 const filtered = projectFilter === 'All' ? projects : projects.filter(p => p.status === projectFilter);
 
                 const updateProjectStatus = (projectId, newStatus) => {
-                    const updatedProjects = projects.map(p => p.id === projectId ? { ...p, status: newStatus } : p);
-                    handleSetProjects(updatedProjects);
+                    const updated = { ...projects.find(p => p.id === projectId), status: newStatus };
+                    const updatedProjects = projects.map(p => p.id === projectId ? updated : p);
+                    handleSetProjects(updatedProjects, 'upsert', updated);
                 };
 
                 return (
@@ -446,7 +499,7 @@
                         id: 'proj_' + Date.now().toString(),
                         name: newProjName, client: newProjClient, quote: Number(newProjQuote), status: newProjStatus, date: new Date().toISOString()
                     };
-                    handleSetProjects([...projects, newProject]);
+                    handleSetProjects([...projects, newProject], 'upsert', newProject);
                     setNewProjName(''); setNewProjClient(''); setNewProjQuote(''); setNewProjStatus('Quotes Submitted');
                     setView('main'); setActiveTab('projects');
                 };
@@ -499,7 +552,7 @@
                     };
                     
                     const updatedProjects = projects.map(p => p.id === activeProject.id ? updatedProject : p);
-                    handleSetProjects(updatedProjects);
+                    handleSetProjects(updatedProjects, 'upsert', updatedProject);
                     setActiveProject(updatedProject);
                     setView('project-detail');
                 };
@@ -539,8 +592,9 @@
                 const pMaterialLogs = materialLogs.filter(m => m.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
 
                 const updateStatus = (newStatus) => {
-                    handleSetProjects(projects.map(p => p.id === activeProject.id ? { ...p, status: newStatus } : p));
-                    setActiveProject({...activeProject, status: newStatus});
+                    const updated = { ...activeProject, status: newStatus };
+                    handleSetProjects(projects.map(p => p.id === activeProject.id ? updated : p), 'upsert', updated);
+                    setActiveProject(updated);
                 };
 
                 const openEditProject = () => {
@@ -642,7 +696,7 @@
                                 {pTimeLogs.map(log => {
                                     const person = people.find(p => p.id === log.personId);
                                     return (
-                                        <div key={log.id} onClick={() => { setEditingTimeLog(log); setView('edit-time'); }} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center cursor-pointer hover:bg-gray-700 transition-colors">
+                                        <div key={log.id} onClick={() => { setEditingTimeLog(log); setEditTimeDate(log.date.split('T')[0]); setEditTimePersonId(log.personId); setEditTimeHours(log.hours); setEditTimeNotes(log.notes || ''); setView('edit-time'); }} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center cursor-pointer hover:bg-gray-700 transition-colors">
                                             <div className="flex gap-3 items-center">
                                                 <div className="bg-orange-500/20 p-2 rounded-full"><Clock size={16} className="text-orange-400"/></div>
                                                 <div>
@@ -662,7 +716,7 @@
                                 })}
 
                                 {pMaterialLogs.map(log => (
-                                    <div key={log.id} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center">
+                                    <div key={log.id} onClick={() => { setEditingMaterialLog(log); setEditMatDate(log.date.split('T')[0]); setEditMatItem(log.item); setEditMatCost(log.cost); setView('edit-material'); }} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center cursor-pointer hover:bg-gray-700 transition-colors">
                                         <div className="flex gap-3 items-center">
                                             <div className="bg-purple-500/20 p-2 rounded-full"><Wrench size={16} className="text-purple-400"/></div>
                                             <div>
@@ -670,8 +724,9 @@
                                                 <p className="text-xs text-gray-400">{new Date(log.date).toLocaleDateString('en-GB')}</p>
                                             </div>
                                         </div>
-                                        <div className="text-right">
+                                        <div className="text-right flex items-center gap-3">
                                             <p className="font-bold text-white">{formatCurrency(log.cost)}</p>
+                                            <ChevronRight size={14} className="text-gray-500" />
                                         </div>
                                     </div>
                                 ))}
@@ -699,7 +754,7 @@
                         date: new Date(timeDate).toISOString(), // Uses selected date
                         notes: timeNotes 
                     };
-                    handleSetTimeLogs([newLog, ...timeLogs]);
+                    handleSetTimeLogs([newLog, ...timeLogs], 'upsert', newLog);
                     
                     // Reset fields
                     setTimeHours(''); 
@@ -745,11 +800,6 @@
             // --- VIEW: EDIT TIME LOG ---
             const renderEditTime = () => {
                 if (!editingTimeLog) return null;
-                
-                const [editTimeDate, setEditTimeDate] = useState(editingTimeLog.date.split('T')[0]);
-                const [editTimePersonId, setEditTimePersonId] = useState(editingTimeLog.personId);
-                const [editTimeHours, setEditTimeHours] = useState(editingTimeLog.hours);
-                const [editTimeNotes, setEditTimeNotes] = useState(editingTimeLog.notes || '');
 
                 const handleSave = () => {
                     if(!editTimePersonId || !editTimeHours) return alert('Select a person and enter hours.');
@@ -761,7 +811,7 @@
                         notes: editTimeNotes 
                     };
                     const updatedLogs = timeLogs.map(t => t.id === editingTimeLog.id ? updatedLog : t);
-                    handleSetTimeLogs(updatedLogs);
+                    handleSetTimeLogs(updatedLogs, 'upsert', updatedLog);
                     setEditingTimeLog(null);
                     setView('project-detail');
                 };
@@ -769,7 +819,7 @@
                 const handleDelete = () => {
                     if(window.confirm('Are you sure you want to delete this time entry?')) {
                         const updatedLogs = timeLogs.filter(t => t.id !== editingTimeLog.id);
-                        handleSetTimeLogs(updatedLogs);
+                        handleSetTimeLogs(updatedLogs, 'delete', editingTimeLog);
                         setEditingTimeLog(null);
                         setView('project-detail');
                     }
@@ -824,7 +874,7 @@
                         cost: Number(matCost), 
                         date: new Date(matDate).toISOString() // Uses selected date
                     };
-                    handleSetMaterialLogs([newLog, ...materialLogs]);
+                    handleSetMaterialLogs([newLog, ...materialLogs], 'upsert', newLog);
                     
                     // Reset fields
                     setMatItem(''); 
@@ -855,6 +905,65 @@
                             <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
                                 <Save size={20} /> Save Material Entry
                             </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: EDIT MATERIAL LOG ---
+            const renderEditMaterial = () => {
+                if (!editingMaterialLog) return null;
+
+                const handleSave = () => {
+                    if(!editMatItem || !editMatCost) return alert('Enter a description and cost.');
+                    const updatedLog = {
+                        ...editingMaterialLog,
+                        item: editMatItem,
+                        cost: Number(editMatCost),
+                        date: new Date(editMatDate).toISOString()
+                    };
+                    const updatedLogs = materialLogs.map(m => m.id === editingMaterialLog.id ? updatedLog : m);
+                    handleSetMaterialLogs(updatedLogs, 'upsert', updatedLog);
+                    setEditingMaterialLog(null);
+                    setView('project-detail');
+                };
+
+                const handleDelete = () => {
+                    if(window.confirm('Are you sure you want to delete this material entry?')) {
+                        const updatedLogs = materialLogs.filter(m => m.id !== editingMaterialLog.id);
+                        handleSetMaterialLogs(updatedLogs, 'delete', editingMaterialLog);
+                        setEditingMaterialLog(null);
+                        setView('project-detail');
+                    }
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => { setEditingMaterialLog(null); setView('project-detail'); }} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-white mb-6">Edit Material Entry</h2>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Date</label>
+                                <input type="date" value={editMatDate} onChange={e => setEditMatDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Material / Receipt Description</label>
+                                <input type="text" value={editMatItem} onChange={e => setEditMatItem(e.target.value)} placeholder="e.g. CEF Invoice #1234" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Total Cost (€)</label>
+                                <input type="number" step="0.01" value={editMatCost} onChange={e => setEditMatCost(e.target.value)} placeholder="e.g. 450.00" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+
+                            <div className="pt-4 space-y-3">
+                                <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Save size={20} /> Save Changes
+                                </button>
+                                <button onClick={handleDelete} className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Trash2 size={20} /> Delete Entry
+                                </button>
+                            </div>
                         </div>
                     </div>
                 );
@@ -895,7 +1004,7 @@
                 const handleSave = () => {
                     if (!newPersonName || !newPersonRate) return alert('Provide Name and Rate.');
                     const newPerson = { id: 'usr_' + Date.now().toString(), name: newPersonName, role: newPersonRole, rate: Number(newPersonRate) };
-                    handleSetPeople([...people, newPerson]);
+                    handleSetPeople([...people, newPerson], 'upsert', newPerson);
                     setNewPersonName(''); setNewPersonRole('Electrician'); setNewPersonRate('');
                     setView('main');
                 };
@@ -963,6 +1072,160 @@
                 );
             };
 
+            // --- VIEW: ANALYTICS ---
+            const renderAnalytics = () => {
+                // Per-job financials
+                const jobStats = projects
+                    .map(p => {
+                        const fin = getProjectFinancials(p.id);
+                        return fin ? { id: p.id, name: p.name, status: p.status, ...fin } : null;
+                    })
+                    .filter(Boolean);
+
+                const totalLabour = jobStats.reduce((s, j) => s + j.labourCost, 0);
+                const totalMaterials = jobStats.reduce((s, j) => s + j.materialCost, 0);
+                const totalSpend = totalLabour + totalMaterials;
+                const totalProfit = jobStats.reduce((s, j) => s + j.currentProfit, 0);
+
+                // Profit by job (only jobs with a quote or some spend)
+                const profitJobs = jobStats
+                    .filter(j => j.quote > 0 || j.totalCost > 0)
+                    .sort((a, b) => b.currentProfit - a.currentProfit);
+                const maxAbsProfit = Math.max(1, ...profitJobs.map(j => Math.abs(j.currentProfit)));
+
+                // Hours per team member
+                const hoursByPerson = people
+                    .map(person => {
+                        const hrs = timeLogs
+                            .filter(t => t.personId === person.id)
+                            .reduce((s, t) => s + Number(t.hours), 0);
+                        return { id: person.id, name: person.name, role: person.role, hrs, cost: hrs * (person.rate || 0) };
+                    })
+                    .filter(p => p.hrs > 0)
+                    .sort((a, b) => b.hrs - a.hrs);
+                const maxHrs = Math.max(1, ...hoursByPerson.map(p => p.hrs));
+
+                // Donut geometry for labour vs materials
+                const R = 42, C = 2 * Math.PI * R;
+                const labourFrac = totalSpend > 0 ? totalLabour / totalSpend : 0;
+                const labourLen = labourFrac * C;
+
+                const Section = ({ icon, title, children }) => (
+                    <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 shadow-lg">
+                        <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-4 flex items-center gap-2">{icon} {title}</h3>
+                        {children}
+                    </div>
+                );
+
+                return (
+                    <div className="p-5 space-y-6 pb-24 relative">
+                        <CloudIndicator />
+                        <h1 className="text-2xl font-bold text-yellow-400 mb-2">Analytics</h1>
+
+                        {/* KPI row */}
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
+                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Total Profit</h3>
+                                <p className={`text-2xl font-bold ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatCurrency(totalProfit)}</p>
+                            </div>
+                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
+                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Total Spend</h3>
+                                <p className="text-2xl font-bold text-white">{formatCurrency(totalSpend)}</p>
+                            </div>
+                        </div>
+
+                        {/* Profit & margin by job */}
+                        <Section icon={<TrendingUp size={14}/>} title="Profit & Margin by Job">
+                            {profitJobs.length === 0 ? (
+                                <p className="text-gray-500 text-sm text-center py-4">No jobs with figures yet.</p>
+                            ) : (
+                                <div className="space-y-4">
+                                    {profitJobs.map(j => {
+                                        const pos = j.currentProfit >= 0;
+                                        const barPct = (Math.abs(j.currentProfit) / maxAbsProfit) * 100;
+                                        return (
+                                            <div key={j.id}>
+                                                <div className="flex justify-between items-baseline mb-1">
+                                                    <span className="text-sm font-bold text-white truncate max-w-[55%]">{j.name}</span>
+                                                    <span className="text-sm font-bold flex items-center gap-2">
+                                                        <span className={pos ? 'text-green-400' : 'text-red-400'}>{formatCurrency(j.currentProfit)}</span>
+                                                        <span className="text-[11px] text-gray-400">{j.profitMargin.toFixed(0)}%</span>
+                                                    </span>
+                                                </div>
+                                                <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                                                    <div className={`h-full rounded-full ${pos ? 'bg-green-500' : 'bg-red-500'}`} style={{ width: `${barPct}%` }}></div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </Section>
+
+                        {/* Labour vs materials split */}
+                        <Section icon={<PieChart size={14}/>} title="Labour vs Materials">
+                            {totalSpend === 0 ? (
+                                <p className="text-gray-500 text-sm text-center py-4">No costs logged yet.</p>
+                            ) : (
+                                <div className="flex items-center gap-5">
+                                    <div className="relative flex-shrink-0">
+                                        <svg width="120" height="120" viewBox="0 0 100 100" className="-rotate-90">
+                                            <circle cx="50" cy="50" r={R} fill="none" stroke="#c084fc" strokeWidth="14" />
+                                            <circle cx="50" cy="50" r={R} fill="none" stroke="#fb923c" strokeWidth="14"
+                                                strokeDasharray={`${labourLen} ${C}`} strokeLinecap="butt" />
+                                        </svg>
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                            <span className="text-[10px] text-gray-400 uppercase tracking-wider">Spend</span>
+                                            <span className="text-sm font-bold text-white leading-tight">{formatCurrency(totalSpend)}</span>
+                                        </div>
+                                    </div>
+                                    <div className="flex-1 space-y-3">
+                                        <div>
+                                            <div className="flex items-center gap-2 mb-0.5">
+                                                <span className="w-3 h-3 rounded-sm bg-orange-400 inline-block"></span>
+                                                <span className="text-sm font-bold text-white">Labour</span>
+                                            </div>
+                                            <p className="text-sm text-gray-300 pl-5">{formatCurrency(totalLabour)} <span className="text-gray-500">({(labourFrac * 100).toFixed(0)}%)</span></p>
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center gap-2 mb-0.5">
+                                                <span className="w-3 h-3 rounded-sm bg-purple-400 inline-block"></span>
+                                                <span className="text-sm font-bold text-white">Materials</span>
+                                            </div>
+                                            <p className="text-sm text-gray-300 pl-5">{formatCurrency(totalMaterials)} <span className="text-gray-500">({((1 - labourFrac) * 100).toFixed(0)}%)</span></p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </Section>
+
+                        {/* Hours by team member */}
+                        <Section icon={<Clock size={14}/>} title="Hours Logged by Team Member">
+                            {hoursByPerson.length === 0 ? (
+                                <p className="text-gray-500 text-sm text-center py-4">No time logged yet.</p>
+                            ) : (
+                                <div className="space-y-4">
+                                    {hoursByPerson.map(p => (
+                                        <div key={p.id}>
+                                            <div className="flex justify-between items-baseline mb-1">
+                                                <span className="text-sm font-bold text-white truncate max-w-[55%]">{p.name}</span>
+                                                <span className="text-sm font-bold flex items-center gap-2">
+                                                    <span className="text-white">{p.hrs} hrs</span>
+                                                    <span className="text-[11px] text-gray-400">{formatCurrency(p.cost)}</span>
+                                                </span>
+                                            </div>
+                                            <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                                                <div className="h-full rounded-full bg-yellow-400" style={{ width: `${(p.hrs / maxHrs) * 100}%` }}></div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </Section>
+                    </div>
+                );
+            };
+
             // ==========================================
             // 4. MAIN RENDER ROUTING
             // ==========================================
@@ -987,10 +1250,12 @@
                 if (view === 'add-time') return renderAddTime();
                 if (view === 'edit-time') return renderEditTime();
                 if (view === 'add-material') return renderAddMaterial();
+                if (view === 'edit-material') return renderEditMaterial();
                 
                 switch(activeTab) {
                     case 'dashboard': return renderDashboard();
                     case 'projects': return renderProjects();
+                    case 'analytics': return renderAnalytics();
                     case 'team': return renderTeam();
                     case 'settings': return renderSettings();
                     default: return renderDashboard();
@@ -1006,9 +1271,10 @@
                     </div>
 
                     {showNav && (
-                        <nav className="fixed bottom-0 w-full max-w-md bg-gray-800 border-t border-gray-700 px-6 py-3 flex justify-between items-center z-40 pb-safe">
+                        <nav className="fixed bottom-0 w-full max-w-md bg-gray-800 border-t border-gray-700 px-3 py-3 flex justify-around items-center z-40 pb-safe">
                             <NavItem icon={<Home />} label="Home" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
                             <NavItem icon={<Briefcase />} label="Jobs" active={activeTab === 'projects'} onClick={() => setActiveTab('projects')} />
+                            <NavItem icon={<BarChart3 />} label="Analytics" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
                             <NavItem icon={<Users />} label="Team" active={activeTab === 'team'} onClick={() => setActiveTab('team')} />
                             <NavItem icon={<Settings />} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
                         </nav>
