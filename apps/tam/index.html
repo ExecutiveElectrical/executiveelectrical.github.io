@@ -34,6 +34,8 @@
         ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
         .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        /* Customise date picker icon for dark mode */
+        input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
     </style>
 </head>
 <body class="text-gray-100">
@@ -142,13 +144,18 @@
             const [editProjClient, setEditProjClient] = useState('');
             const [editProjQuote, setEditProjQuote] = useState('');
             
+            // --- Log Time States ---
+            const [timeDate, setTimeDate] = useState(new Date().toISOString().split('T')[0]); // Default today
             const [timePersonId, setTimePersonId] = useState('');
             const [timeHours, setTimeHours] = useState('');
             const [timeNotes, setTimeNotes] = useState('');
             
+            // --- Log Material States ---
+            const [matDate, setMatDate] = useState(new Date().toISOString().split('T')[0]); // Default today
             const [matItem, setMatItem] = useState('');
             const [matCost, setMatCost] = useState('');
             
+            // --- Team Member States ---
             const [newPersonName, setNewPersonName] = useState('');
             const [newPersonRole, setNewPersonRole] = useState('Electrician');
             const [newPersonRate, setNewPersonRate] = useState('');
@@ -678,9 +685,22 @@
 
                 const handleSave = () => {
                     if(!selectedPersonId || !timeHours) return alert('Select a person and enter hours.');
-                    const newLog = { id: 'time_' + Date.now().toString(), projectId: activeProject.id, personId: selectedPersonId, hours: Number(timeHours), date: new Date().toISOString(), notes: timeNotes };
+                    const newLog = { 
+                        id: 'time_' + Date.now().toString(), 
+                        projectId: activeProject.id, 
+                        personId: selectedPersonId, 
+                        hours: Number(timeHours), 
+                        date: new Date(timeDate).toISOString(), // Uses selected date
+                        notes: timeNotes 
+                    };
                     handleSetTimeLogs([newLog, ...timeLogs]);
-                    setTimeHours(''); setTimeNotes(''); setTimePersonId('');
+                    
+                    // Reset fields
+                    setTimeHours(''); 
+                    setTimeNotes(''); 
+                    setTimePersonId('');
+                    setTimeDate(new Date().toISOString().split('T')[0]); // Reset to today
+                    
                     setView('project-detail');
                 };
 
@@ -690,6 +710,10 @@
                         <h2 className="text-2xl font-bold text-white mb-6">Log Time for<br/><span className="text-yellow-400 text-lg">{activeProject?.name}</span></h2>
                         
                         <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Date</label>
+                                <input type="date" value={timeDate} onChange={e => setTimeDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Team Member</label>
                                 <select value={selectedPersonId} onChange={e => setTimePersonId(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white appearance-none focus:border-yellow-400 outline-none">
@@ -716,9 +740,20 @@
             const renderAddMaterial = () => {
                 const handleSave = () => {
                     if(!matItem || !matCost) return alert('Enter a description and cost.');
-                    const newLog = { id: 'mat_' + Date.now().toString(), projectId: activeProject.id, item: matItem, cost: Number(matCost), date: new Date().toISOString() };
+                    const newLog = { 
+                        id: 'mat_' + Date.now().toString(), 
+                        projectId: activeProject.id, 
+                        item: matItem, 
+                        cost: Number(matCost), 
+                        date: new Date(matDate).toISOString() // Uses selected date
+                    };
                     handleSetMaterialLogs([newLog, ...materialLogs]);
-                    setMatItem(''); setMatCost('');
+                    
+                    // Reset fields
+                    setMatItem(''); 
+                    setMatCost('');
+                    setMatDate(new Date().toISOString().split('T')[0]); // Reset to today
+                    
                     setView('project-detail');
                 };
 
@@ -728,6 +763,10 @@
                         <h2 className="text-2xl font-bold text-white mb-6">Log Materials for<br/><span className="text-yellow-400 text-lg">{activeProject?.name}</span></h2>
                         
                         <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Date</label>
+                                <input type="date" value={matDate} onChange={e => setMatDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Material / Receipt Description</label>
                                 <input type="text" value={matItem} onChange={e => setMatItem(e.target.value)} placeholder="e.g. CEF Invoice #1234" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
@@ -914,3 +953,5 @@
     </script>
 </body>
 </html>
+
+
