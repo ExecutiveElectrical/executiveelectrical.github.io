@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Executive Electrical | Cost Tracker</title>
+
+    <!-- PWA / install support -->
+    <meta name="theme-color" content="#111827">
+    <link rel="manifest" href="manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="TITS">
+    <link rel="apple-touch-icon" href="icon-192.png">
     
     <!-- Lightbulb Favicon (Brand Yellow) -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23facc15' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.9 1.2 1.5 1.5 2.5'/%3E%3Cpath d='M9 18h6'/%3E%3Cpath d='M10 22h4'/%3E%3C/svg%3E">
@@ -40,6 +49,15 @@
 <body class="text-gray-100">
     <div id="root"></div>
 
+    <script>
+        // Register the service worker (enables installability + fast shell load).
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(() => {});
+            });
+        }
+    </script>
+
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
@@ -48,6 +66,12 @@
             ChevronRight, ArrowLeft, Save, Activity, Cloud, RefreshCw, 
             UserPlus, FileText, Download, Calendar, X, FileSpreadsheet, Settings, Link, Edit, Trash2, BarChart3, TrendingUp
         } from 'https://esm.sh/lucide-react@0.294.0';
+
+        // Firebase (modular v10) from Google's official module CDN - the three
+        // modules share one app instance here, which esm.sh does not reliably do.
+        import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 
         // Custom Hook for Local Storage (used for the Script URL)
         function useLocalStorage(key, initialValue) {
@@ -66,108 +90,138 @@
         }
 
         function App() {
+            // Firebase config baked in, so no pasting needed. The Settings box can
+            // still override this on a given device if you ever point it elsewhere.
+            const FIREBASE_CONFIG = {
+                apiKey: "AIzaSyDigyvF9L_BvPZh7BsAPcVjRR0gaIsb6ZI",
+                authDomain: "timinvtrasys.firebaseapp.com",
+                projectId: "timinvtrasys",
+                storageBucket: "timinvtrasys.firebasestorage.app",
+                messagingSenderId: "91354575877",
+                appId: "1:91354575877:web:2a230353d38d54279c186c"
+            };
+
             // --- Core App Navigation State ---
             const [activeTab, setActiveTab] = useState('dashboard');
             const [activeProject, setActiveProject] = useState(null);
             const [view, setView] = useState('main'); 
 
-            // --- Database Settings ---
-            const [scriptUrl, setScriptUrl] = useLocalStorage('ee_script_url', '');
+            // --- Connection Settings ---
+            // Firebase web config (paste from the Firebase console). Kept on this
+            // device only. The old Apps Script URL is kept solely for a one-time import.
+            const [fbConfig, setFbConfig] = useLocalStorage('ee_fb_config', '');
 
-            // --- Cloud Sync State ---
+            // --- Cloud / Auth State ---
             const [loading, setLoading] = useState(true);
             const [saving, setSaving] = useState(false);
+            const [db, setDb] = useState(null);
+            const [auth, setAuth] = useState(null);
+            const [user, setUser] = useState(null);
+            const [authReady, setAuthReady] = useState(false);
+            const [initError, setInitError] = useState('');
+
+            // --- Install (PWA) state ---
+            const [deferredPrompt, setDeferredPrompt] = useState(null);
+            const [isStandalone, setIsStandalone] = useState(false);
+            const [isIos, setIsIos] = useState(false);
+            const [installDismissed, setInstallDismissed] = useState(false);
+            const [showIosHelp, setShowIosHelp] = useState(false);
+
             const [projects, setProjects] = useState([]);
             const [people, setPeople] = useState([]);
             const [timeLogs, setTimeLogs] = useState([]);
             const [materialLogs, setMaterialLogs] = useState([]);
-            
-            // Ref to track saving status inside intervals
-            const isSavingRef = useRef(false);
-            useEffect(() => { isSavingRef.current = saving; }, [saving]);
 
-            // --- Function to fetch latest data silently ---
-            const fetchLatestData = async (showLoadingScreen = false) => {
-                if (!scriptUrl) return;
-                if (showLoadingScreen) setLoading(true);
-                
-                try {
-                    const res = await fetch(scriptUrl);
-                    const data = await res.json();
-                    
-                    // Only update if we aren't currently trying to save something
-                    if (!isSavingRef.current) {
-                        setProjects(data.projects || []);
-                        setPeople(data.people || []);
-                        setTimeLogs(data.timeLogs || []);
-                        setMaterialLogs(data.materialLogs || []);
-                    }
-                    if (showLoadingScreen) setLoading(false);
-                } catch (err) {
-                    console.error("Failed to fetch data:", err);
-                    if (showLoadingScreen) setLoading(false);
-                }
+            // Tolerant parse: accepts strict JSON or the JS object literal you copy
+            // straight out of the Firebase console (unquoted keys).
+            const parseConfig = (raw) => {
+                if (!raw || !raw.trim()) return null;
+                try { return JSON.parse(raw); } catch (e) {}
+                try { return Function('return (' + raw + ')')(); } catch (e) { return null; }
             };
 
-            // Fetch Data on Load & Start Auto-Sync Polling
+            // Initialise Firebase. Uses a Settings override if present, else the
+            // baked-in config above.
             useEffect(() => {
-                if (scriptUrl) {
-                    fetchLatestData(true); // Initial load with loading screen
-                    
-                    // Auto-sync every 10 seconds in the background
-                    const intervalId = setInterval(() => {
-                        fetchLatestData(false);
-                    }, 10000); 
-                    
-                    return () => clearInterval(intervalId); // Cleanup
-                } else {
-                    // Start completely empty if no URL is set
-                    setProjects([]);
-                    setPeople([]);
-                    setTimeLogs([]);
-                    setMaterialLogs([]);
+                const cfg = parseConfig(fbConfig) || FIREBASE_CONFIG;
+                if (!cfg || !cfg.projectId) { setInitError('Firebase config could not be read.'); setLoading(false); return; }
+                try {
+                    const app = getApps().length ? getApp() : initializeApp(cfg);
+                    const _auth = getAuth(app);
+                    setPersistence(_auth, browserLocalPersistence).catch(() => {});
+                    setDb(getFirestore(app));
+                    setAuth(_auth);
+                    const unsub = onAuthStateChanged(_auth, (u) => { setUser(u); setAuthReady(true); });
+                    return () => unsub();
+                } catch (e) {
+                    setInitError(e.message || 'Firebase failed to initialise.');
                     setLoading(false);
                 }
-            }, [scriptUrl]);
+            }, [fbConfig]);
 
-            // Pull the latest data the moment an add/edit screen opens, so you are
-            // always working from current figures (e.g. the newest rates and team
-            // members) before logging or editing anything. Runs silently.
+            // Detect whether the app is already installed (standalone) and on iOS,
+            // and capture Android/Chrome's install prompt when it is offered.
             useEffect(() => {
-                const refreshOnOpen = [
-                    'add-project', 'edit-project', 'add-person', 'edit-person',
-                    'add-time', 'edit-time', 'add-material', 'edit-material'
-                ];
-                if (scriptUrl && refreshOnOpen.includes(view)) {
-                    fetchLatestData(false);
-                }
-            }, [view]);
+                const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+                setIsStandalone(standalone);
+                setIsIos(/iphone|ipad|ipod/i.test(window.navigator.userAgent) && !window.MSStream);
 
-            // Save a SINGLE record change to Google Apps Script.
-            // We never push the whole database, so two people editing different
-            // records at the same time can never overwrite each other. The server
-            // applies this one change under a lock and we then pull the merged truth.
+                const onBeforeInstall = (e) => { e.preventDefault(); setDeferredPrompt(e); };
+                const onInstalled = () => { setDeferredPrompt(null); setIsStandalone(true); };
+                window.addEventListener('beforeinstallprompt', onBeforeInstall);
+                window.addEventListener('appinstalled', onInstalled);
+                return () => {
+                    window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+                    window.removeEventListener('appinstalled', onInstalled);
+                };
+            }, []);
+
+            const runInstall = async () => {
+                if (isIos) { setShowIosHelp(true); return; }
+                if (!deferredPrompt) return;
+                deferredPrompt.prompt();
+                try { await deferredPrompt.userChoice; } catch (e) {}
+                setDeferredPrompt(null);
+            };
+
+            // Banner shows only when not already installed and either Android offered
+            // a prompt or we're on iOS Safari (which installs via the Share menu).
+            const canInstall = !isStandalone && (deferredPrompt || isIos);
+
+            // Real-time listeners: each collection streams straight into state, so
+            // every device sees changes the instant they happen. No polling, and two
+            // people editing different records never collide (per-document writes).
+            useEffect(() => {
+                if (!db || !user) return;
+                setLoading(true);
+                const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs };
+                const unsubs = Object.keys(setters).map(name =>
+                    onSnapshot(collection(db, name),
+                        (snap) => { setters[name](snap.docs.map(d => d.data())); setLoading(false); },
+                        (err) => { console.error('Listener error (' + name + '):', err); setLoading(false); }
+                    )
+                );
+                return () => unsubs.forEach(u => u());
+            }, [db, user]);
+
+            // Save a SINGLE record. upsert -> setDoc (keyed by the record's own id),
+            // delete -> deleteDoc. The listeners above then update the UI automatically.
             const pushOp = async (action, type, record) => {
-                if (!scriptUrl || !record) return;
+                if (!db || !record || !record.id) return;
                 setSaving(true);
                 try {
-                    await fetch(scriptUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                        body: JSON.stringify({ action, type, record })
-                    });
+                    if (action === 'delete') await deleteDoc(doc(db, type, record.id));
+                    else await setDoc(doc(db, type, record.id), record);
                 } catch (err) {
-                    console.error("Failed to save:", err);
-                    alert("Could not reach the cloud. Tap Refresh to check whether your change saved.");
+                    console.error('Save failed:', err);
+                    alert('Could not save to the cloud: ' + (err.message || err));
                 } finally {
                     setSaving(false);
-                    // Reconcile with the server so we also pick up the other person's changes.
-                    fetchLatestData(false);
                 }
             };
 
-            // Wrapped Setters: update local state optimistically, then push the one
-            // record that changed. action is 'upsert' (add/edit) or 'delete'.
+            // Wrapped Setters: update local state optimistically (instant UI), then
+            // write the one record that changed. The snapshot reconciles right after.
             const handleSetProjects = (newProjects, action, record) => { setProjects(newProjects); pushOp(action, 'projects', record); };
             const handleSetPeople = (newPeople, action, record) => { setPeople(newPeople); pushOp(action, 'people', record); };
             const handleSetTimeLogs = (newLogs, action, record) => { setTimeLogs(newLogs); pushOp(action, 'timeLogs', record); };
@@ -224,7 +278,13 @@
             const [showAccountantExport, setShowAccountantExport] = useState(false);
             const [exportStartDate, setExportStartDate] = useState('');
             const [exportEndDate, setExportEndDate] = useState('');
-            const [localUrlInput, setLocalUrlInput] = useState(scriptUrl || '');
+            const [localConfigInput, setLocalConfigInput] = useState(fbConfig || '');
+
+            // Login form
+            const [loginEmail, setLoginEmail] = useState('');
+            const [loginPwd, setLoginPwd] = useState('');
+            const [loginError, setLoginError] = useState('');
+            const [loggingIn, setLoggingIn] = useState(false);
 
             // Helper: Format Euros (Ireland locale defaults)
             const formatCurrency = (amount) => new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' }).format(amount);
@@ -261,16 +321,15 @@
                 return { labourCost, materialCost, totalCost, currentProfit, profitMargin, spendPercentage, quote: project.quote };
             };
 
-            // Cloud Status Indicator (Now Clickable)
+            // Cloud Status Indicator (real-time)
             const CloudIndicator = () => {
-                if (!scriptUrl) return <div className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-red-500"><Cloud size={12}/> Offline</div>;
+                if (!db || !user) return <div className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-red-500"><Cloud size={12}/> Offline</div>;
                 return (
-                    <button 
-                        onClick={() => fetchLatestData(true)}
-                        className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-white transition-colors bg-gray-800 px-2 py-1 rounded-lg border border-gray-700 shadow-md"
-                    >
-                        {saving ? <><RefreshCw size={12} className="animate-spin text-yellow-400"/> Saving...</> : <><RefreshCw size={12} className="text-blue-400"/> Refresh</>}
-                    </button>
+                    <div className="absolute top-5 right-5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 bg-gray-800 px-2 py-1 rounded-lg border border-gray-700 shadow-md">
+                        {saving
+                            ? <><RefreshCw size={12} className="animate-spin text-yellow-400"/> Saving...</>
+                            : <><span className="w-2 h-2 rounded-full bg-green-400 inline-block"></span> Live</>}
+                    </div>
                 );
             };
 
@@ -1107,9 +1166,9 @@
 
             // --- VIEW: SETTINGS ---
             const renderSettings = () => {
-                const saveUrl = () => {
-                    setScriptUrl(localUrlInput.trim());
-                    alert("Database link saved. The app will now reload.");
+                const saveConfig = () => {
+                    setFbConfig(localConfigInput.trim());
+                    alert('Connection saved. The app will now reload.');
                     window.location.reload();
                 };
 
@@ -1118,25 +1177,90 @@
                         <CloudIndicator />
                         <h1 className="text-2xl font-bold text-yellow-400 mb-6">Settings</h1>
 
+                        {/* Firebase connection */}
                         <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 space-y-4 shadow-lg">
-                            <h3 className="font-bold text-white flex items-center gap-2"><Link size={18} className="text-yellow-400"/> Database Connection</h3>
+                            <h3 className="font-bold text-white flex items-center gap-2"><Cloud size={18} className="text-yellow-400"/> Firebase Connection</h3>
                             <p className="text-sm text-gray-400 leading-relaxed">
-                                Enter your Google Apps Script Web App URL below to connect this device to your cloud database. Because this is saved locally on your phone, hosting the app on GitHub Pages is perfectly secure.
+                                Paste your Firebase web config object below (Firebase console &gt; Project settings &gt; Your apps). It is stored on this device only.
                             </p>
-                            
-                            <div>
-                                <input 
-                                    type="text" 
-                                    value={localUrlInput} 
-                                    onChange={e => setLocalUrlInput(e.target.value)} 
-                                    placeholder="https://script.google.com/macros/s/..." 
-                                    className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-sm text-white focus:border-yellow-400 outline-none font-mono" 
-                                />
-                            </div>
-                            
-                            <button onClick={saveUrl} className="w-full bg-yellow-400 text-gray-900 hover:bg-yellow-300 font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">
-                                <Save size={18} /> Save & Connect
+                            <textarea
+                                value={localConfigInput}
+                                onChange={e => setLocalConfigInput(e.target.value)}
+                                placeholder={'{\n  "apiKey": "...",\n  "authDomain": "...",\n  "projectId": "...",\n  "appId": "..."\n}'}
+                                rows={7}
+                                className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-xs text-white focus:border-yellow-400 outline-none font-mono"
+                            />
+                            <button onClick={saveConfig} className="w-full bg-yellow-400 text-gray-900 hover:bg-yellow-300 font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">
+                                <Save size={18} /> Save &amp; Connect
                             </button>
+                            {initError && <p className="text-xs text-red-400">{initError}</p>}
+                            {db && user && <p className="text-xs text-green-400">Connected and signed in as {user.email}.</p>}
+                        </div>
+
+                        {/* Install */}
+                        {!isStandalone && (
+                            <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 space-y-3 shadow-lg">
+                                <h3 className="font-bold text-white flex items-center gap-2"><Download size={18} className="text-yellow-400"/> Install App</h3>
+                                <p className="text-sm text-gray-400 leading-relaxed">Add TITS to your home screen so it opens like a normal app, full screen and quick to launch.</p>
+                                {canInstall ? (
+                                    <button onClick={runInstall} className="w-full bg-yellow-400 text-gray-900 hover:bg-yellow-300 font-bold py-3 rounded-xl flex items-center justify-center gap-2">
+                                        <Download size={18}/> {isIos ? 'How to install' : 'Install'}
+                                    </button>
+                                ) : (
+                                    <p className="text-xs text-gray-500">Install isn't available here yet. On Android open this in Chrome; on iPhone open it in Safari.</p>
+                                )}
+                            </div>
+                        )}
+                        {isStandalone && (
+                            <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg">
+                                <p className="text-sm text-green-400 flex items-center gap-2"><Download size={18}/> App is installed.</p>
+                            </div>
+                        )}
+
+                        {/* Account */}
+                        {user && (
+                            <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 space-y-3 shadow-lg">
+                                <h3 className="font-bold text-white flex items-center gap-2"><Users size={18} className="text-yellow-400"/> Account</h3>
+                                <p className="text-sm text-gray-400">Signed in as {user.email}</p>
+                                <button onClick={() => { if (auth) signOut(auth); }} className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-3 rounded-xl flex items-center justify-center gap-2">
+                                    Sign Out
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            // --- VIEW: LOGIN ---
+            const renderLogin = () => {
+                const doLogin = async () => {
+                    setLoginError('');
+                    if (!loginEmail || !loginPwd) { setLoginError('Enter your email and password.'); return; }
+                    setLoggingIn(true);
+                    try {
+                        await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPwd);
+                    } catch (e) {
+                        setLoginError('Sign-in failed. Check your email and password.');
+                    } finally {
+                        setLoggingIn(false);
+                    }
+                };
+
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                        <h1 className="text-2xl font-black text-white mb-1">
+                            <span className="text-yellow-400">T</span>imes <span className="text-yellow-400">I</span>nventory <span className="text-yellow-400">T</span>racking <span className="text-yellow-400">S</span>ystem
+                        </h1>
+                        <p className="text-gray-500 text-xs mb-8 italic">Sign in to continue</p>
+
+                        <div className="w-full max-w-xs space-y-3">
+                            <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            <input type="password" value={loginPwd} onChange={e => setLoginPwd(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doLogin(); }} placeholder="Password" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            {loginError && <p className="text-sm text-red-400">{loginError}</p>}
+                            <button onClick={doLogin} disabled={loggingIn} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl flex justify-center items-center gap-2 disabled:opacity-50">
+                                {loggingIn ? <><RefreshCw size={18} className="animate-spin"/> Signing in...</> : 'Sign In'}
+                            </button>
+                            <button onClick={() => { setActiveTab('settings'); setView('main'); }} className="text-xs text-gray-500 hover:text-gray-300 pt-2">Connection settings</button>
                         </div>
                     </div>
                 );
@@ -1326,18 +1450,29 @@
             // 4. MAIN RENDER ROUTING
             // ==========================================
             const renderContent = () => {
-                if (!scriptUrl && activeTab !== 'settings') {
-                    return (
-                        <div className="h-screen flex flex-col items-center justify-center p-6 text-center">
-                            <Cloud className="text-gray-600 mb-4" size={48} />
-                            <h2 className="text-xl font-bold text-white mb-2">No Database Connected</h2>
-                            <p className="text-gray-400 text-sm mb-6">Please go to Settings to enter your Google Apps Script URL.</p>
-                            <button onClick={() => setActiveTab('settings')} className="bg-yellow-400 text-gray-900 font-bold py-3 px-6 rounded-xl">Go to Settings</button>
-                        </div>
-                    );
+                // Firebase is configured in code, so go straight to connecting/sign-in.
+                // 1. Still starting up (or failed to start).
+                if (!authReady && activeTab !== 'settings') {
+                    if (initError) {
+                        return (
+                            <div className="h-screen flex flex-col items-center justify-center p-6 text-center">
+                                <Cloud className="text-red-500 mb-4" size={48} />
+                                <h2 className="text-lg font-bold text-white mb-2">Could not connect</h2>
+                                <p className="text-gray-400 text-sm mb-2">{initError}</p>
+                                <p className="text-gray-500 text-xs mb-6">Check that Cloud Firestore is created and its rules are published.</p>
+                                <button onClick={() => setActiveTab('settings')} className="bg-yellow-400 text-gray-900 font-bold py-3 px-6 rounded-xl">Open Settings</button>
+                            </div>
+                        );
+                    }
+                    return <div className="h-screen flex flex-col items-center justify-center text-yellow-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Connecting...</p></div>;
                 }
 
-                if (loading && scriptUrl) return <div className="h-screen flex flex-col items-center justify-center text-yellow-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Loading Data...</p></div>;
+                // 2. Connected but not signed in -> login (Settings stays reachable).
+                if (authReady && !user && activeTab !== 'settings') {
+                    return renderLogin();
+                }
+
+                if (loading && user && activeTab !== 'settings') return <div className="h-screen flex flex-col items-center justify-center text-yellow-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Loading Data...</p></div>;
                 
                 if (view === 'add-project') return renderAddProject();
                 if (view === 'edit-project') return renderEditProject();
@@ -1359,10 +1494,38 @@
                 }
             };
 
-            const showNav = view === 'main' && (!loading || !scriptUrl);
+            const onLoginScreen = authReady && !user && activeTab !== 'settings';
+            const showNav = view === 'main' && !onLoginScreen;
 
             return (
                 <div className="bg-gray-900 min-h-screen max-w-md mx-auto relative shadow-2xl border-x border-gray-800">
+                    {canInstall && !installDismissed && (
+                        <div className="bg-yellow-400 text-gray-900 px-4 py-2 flex items-center justify-between gap-2 text-sm font-bold">
+                            <span className="flex items-center gap-2"><Download size={16}/> Install TITS on your phone</span>
+                            <span className="flex items-center gap-1">
+                                <button onClick={runInstall} className="bg-gray-900 text-yellow-400 px-3 py-1 rounded-lg">Install</button>
+                                <button onClick={() => setInstallDismissed(true)} className="p-1"><X size={16}/></button>
+                            </span>
+                        </div>
+                    )}
+
+                    {showIosHelp && (
+                        <div className="fixed inset-0 bg-black/80 flex items-end justify-center p-4 z-50" onClick={() => setShowIosHelp(false)}>
+                            <div className="bg-gray-800 border border-gray-700 rounded-2xl w-full max-w-sm p-6 shadow-2xl mb-4" onClick={e => e.stopPropagation()}>
+                                <div className="flex justify-between items-center mb-3">
+                                    <h3 className="text-lg font-bold text-white">Add to Home Screen</h3>
+                                    <button onClick={() => setShowIosHelp(false)} className="text-gray-400 hover:text-white"><X size={20}/></button>
+                                </div>
+                                <ol className="text-sm text-gray-300 space-y-2 list-decimal list-inside">
+                                    <li>Tap the <span className="text-yellow-400 font-bold">Share</span> button in Safari's toolbar.</li>
+                                    <li>Scroll down and tap <span className="text-yellow-400 font-bold">Add to Home Screen</span>.</li>
+                                    <li>Tap <span className="text-yellow-400 font-bold">Add</span>. TITS will appear like a normal app.</li>
+                                </ol>
+                                <p className="text-xs text-gray-500 mt-4">Note: this only works in Safari, not Chrome, on iPhone.</p>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="h-full overflow-y-auto">
                         {renderContent()}
                     </div>
