@@ -131,6 +131,7 @@
             const [people, setPeople] = useState([]);
             const [timeLogs, setTimeLogs] = useState([]);
             const [materialLogs, setMaterialLogs] = useState([]);
+            const [rosterEntries, setRosterEntries] = useState([]);
 
             // Tolerant parse: accepts strict JSON or the JS object literal you copy
             // straight out of the Firebase console (unquoted keys).
@@ -194,7 +195,7 @@
             useEffect(() => {
                 if (!db || !user) return;
                 setLoading(true);
-                const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs };
+                const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs, rosterEntries: setRosterEntries };
                 const unsubs = Object.keys(setters).map(name =>
                     onSnapshot(collection(db, name),
                         (snap) => { setters[name](snap.docs.map(d => d.data())); setLoading(false); },
@@ -226,20 +227,37 @@
             const handleSetPeople = (newPeople, action, record) => { setPeople(newPeople); pushOp(action, 'people', record); };
             const handleSetTimeLogs = (newLogs, action, record) => { setTimeLogs(newLogs); pushOp(action, 'timeLogs', record); };
             const handleSetMaterialLogs = (newLogs, action, record) => { setMaterialLogs(newLogs); pushOp(action, 'materialLogs', record); };
+            const handleSetRoster = (newEntries, action, record) => { setRosterEntries(newEntries); pushOp(action, 'rosterEntries', record); };
+
+            // Date helpers (local time, no timezone drift)
+            const formatYMD = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const parseYMD = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+            const startOfWeekMon = (d) => { const x = new Date(d); const off = (x.getDay() + 6) % 7; x.setDate(x.getDate() - off); x.setHours(0,0,0,0); return x; };
+            const prettyDate = (s) => parseYMD(s).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
             // --- Form States ---
             const [projectFilter, setProjectFilter] = useState('All');
             const [analyticsFilter, setAnalyticsFilter] = useState('All');
             const [analyticsSite, setAnalyticsSite] = useState('All');
+
+            // --- Roster State ---
+            const [rosterMode, setRosterMode] = useState('month'); // 'month' | 'week' | 'day'
+            const [rosterRef, setRosterRef] = useState(new Date().toISOString().split('T')[0]); // focused date
+            const [assignSite, setAssignSite] = useState('');
+            const [assignPerson, setAssignPerson] = useState('');
+            const [jobRosterDate, setJobRosterDate] = useState(new Date().toISOString().split('T')[0]);
+            const [jobRosterPerson, setJobRosterPerson] = useState('');
             const [newProjName, setNewProjName] = useState('');
             const [newProjClient, setNewProjClient] = useState('');
             const [newProjQuote, setNewProjQuote] = useState('');
             const [newProjStatus, setNewProjStatus] = useState('Quotes Submitted');
+            const [newProjStart, setNewProjStart] = useState('');
             
             // --- Edit Project Form States ---
             const [editProjName, setEditProjName] = useState('');
             const [editProjClient, setEditProjClient] = useState('');
             const [editProjQuote, setEditProjQuote] = useState('');
+            const [editProjStart, setEditProjStart] = useState('');
             
             // --- Log & Edit Time States ---
             const [timeDate, setTimeDate] = useState(new Date().toISOString().split('T')[0]); // Default today
@@ -311,6 +329,8 @@
                     return total + (log.hours * (person?.rate || 0));
                 }, 0);
 
+                const totalHours = projectTime.reduce((total, log) => total + Number(log.hours), 0);
+
                 const materialCost = projectMaterials.reduce((total, log) => total + Number(log.cost), 0);
                 const totalCost = labourCost + materialCost;
                 
@@ -318,7 +338,7 @@
                 const profitMargin = project.quote > 0 ? (currentProfit / project.quote) * 100 : 0;
                 const spendPercentage = project.quote > 0 ? (totalCost / project.quote) * 100 : 0;
 
-                return { labourCost, materialCost, totalCost, currentProfit, profitMargin, spendPercentage, quote: project.quote };
+                return { labourCost, materialCost, totalCost, totalHours, currentProfit, profitMargin, spendPercentage, quote: project.quote };
             };
 
             // Cloud Status Indicator (real-time)
@@ -407,8 +427,8 @@
                             <h1 className="text-[16px] min-[375px]:text-[18px] sm:text-[22px] font-black text-white leading-tight whitespace-nowrap tracking-tighter">
                                 <span className="text-yellow-400">T</span>imes <span className="text-yellow-400">I</span>nventory <span className="text-yellow-400">T</span>racking <span className="text-yellow-400">S</span>ystem
                             </h1>
-                            <p className="text-gray-400 text-[13px] mt-1 italic font-medium">
-                                <span className="text-yellow-400 font-bold tracking-widest">[+][+]</span> "Because Bigger Jobs Need Better Control."
+                            <p className="text-gray-400 text-[11px] mt-1 italic font-medium whitespace-nowrap">
+                                <span className="text-yellow-400 font-bold tracking-widest">[+][+]</span> Because Bigger Jobs Need Better Control.
                             </p>
                         </header>
 
@@ -507,12 +527,10 @@
                 return (
                     <div className="p-5 space-y-4 pb-24 relative">
                         <CloudIndicator />
-                        <div className="flex justify-between items-center mb-4">
-                            <h1 className="text-2xl font-bold text-yellow-400">Jobs</h1>
-                            <button onClick={() => setView('add-project')} className="bg-yellow-400 text-gray-900 px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 shadow-lg shadow-yellow-400/20">
-                                <Plus size={16} /> New Job
-                            </button>
-                        </div>
+                        <h1 className="text-2xl font-bold text-yellow-400 mt-8">Jobs</h1>
+                        <button onClick={() => setView('add-project')} className="w-full bg-yellow-400 text-gray-900 px-3 py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-1 shadow-lg shadow-yellow-400/20">
+                            <Plus size={16} /> New Job
+                        </button>
 
                         <div className="flex gap-2 overflow-x-auto pb-2 -mx-5 px-5 scrollbar-hide" style={{ WebkitOverflowScrolling: 'touch' }}>
                             {statuses.map(s => (
@@ -564,10 +582,10 @@
                     if (!newProjName || !newProjQuote) return alert('Please provide a Job Name and Quote amount.');
                     const newProject = {
                         id: 'proj_' + Date.now().toString(),
-                        name: newProjName, client: newProjClient, quote: Number(newProjQuote), status: newProjStatus, date: new Date().toISOString()
+                        name: newProjName, client: newProjClient, quote: Number(newProjQuote), status: newProjStatus, startDate: newProjStart || '', date: new Date().toISOString()
                     };
                     handleSetProjects([...projects, newProject], 'upsert', newProject);
-                    setNewProjName(''); setNewProjClient(''); setNewProjQuote(''); setNewProjStatus('Quotes Submitted');
+                    setNewProjName(''); setNewProjClient(''); setNewProjQuote(''); setNewProjStatus('Quotes Submitted'); setNewProjStart('');
                     setView('main'); setActiveTab('projects');
                 };
 
@@ -588,6 +606,10 @@
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Quoted Value (€)</label>
                                 <input type="number" value={newProjQuote} onChange={e => setNewProjQuote(e.target.value)} placeholder="e.g. 8500" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Start Date (optional)</label>
+                                <input type="date" value={newProjStart} onChange={e => setNewProjStart(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Current Status</label>
@@ -615,13 +637,29 @@
                         ...activeProject,
                         name: editProjName,
                         client: editProjClient,
-                        quote: Number(editProjQuote)
+                        quote: Number(editProjQuote),
+                        startDate: editProjStart || ''
                     };
                     
                     const updatedProjects = projects.map(p => p.id === activeProject.id ? updatedProject : p);
                     handleSetProjects(updatedProjects, 'upsert', updatedProject);
                     setActiveProject(updatedProject);
                     setView('project-detail');
+                };
+
+                const handleDelete = () => {
+                    const tl = timeLogs.filter(t => t.projectId === activeProject.id);
+                    const ml = materialLogs.filter(m => m.projectId === activeProject.id);
+                    const msg = 'Delete "' + activeProject.name + '"?\n\nThis also removes its ' + tl.length + ' time and ' + ml.length + ' material entries. This cannot be undone.';
+                    if (!window.confirm(msg)) return;
+                    tl.forEach(t => pushOp('delete', 'timeLogs', t));
+                    ml.forEach(m => pushOp('delete', 'materialLogs', m));
+                    setTimeLogs(timeLogs.filter(t => t.projectId !== activeProject.id));
+                    setMaterialLogs(materialLogs.filter(m => m.projectId !== activeProject.id));
+                    handleSetProjects(projects.filter(p => p.id !== activeProject.id), 'delete', activeProject);
+                    setActiveProject(null);
+                    setView('main');
+                    setActiveTab('projects');
                 };
 
                 return (
@@ -642,10 +680,19 @@
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Quoted Value (€)</label>
                                 <input type="number" value={editProjQuote} onChange={e => setEditProjQuote(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
                             </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Start Date (optional)</label>
+                                <input type="date" value={editProjStart} onChange={e => setEditProjStart(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
+                            </div>
                             
-                            <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2 hover:bg-yellow-300">
-                                <Save size={20} /> Save Changes
-                            </button>
+                            <div className="pt-2 space-y-3">
+                                <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl flex justify-center items-center gap-2 hover:bg-yellow-300">
+                                    <Save size={20} /> Save Changes
+                                </button>
+                                <button onClick={handleDelete} className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Trash2 size={20} /> Delete Job
+                                </button>
+                            </div>
                         </div>
                     </div>
                 );
@@ -668,6 +715,7 @@
                     setEditProjName(activeProject.name);
                     setEditProjClient(activeProject.client);
                     setEditProjQuote(activeProject.quote);
+                    setEditProjStart(activeProject.startDate || '');
                     setView('edit-project');
                 };
 
@@ -723,7 +771,7 @@
                                 </div>
                                 <p className="text-right text-xs text-gray-400 mb-6">{fin.spendPercentage.toFixed(1)}% of budget used</p>
 
-                                <div className="grid grid-cols-2 gap-4 border-t border-gray-700 pt-4">
+                                <div className="grid grid-cols-3 gap-3 border-t border-gray-700 pt-4">
                                     <div>
                                         <p className="text-xs text-gray-400 mb-1">Labour Cost</p>
                                         <p className="font-bold text-orange-400">{formatCurrency(fin.labourCost)}</p>
@@ -731,6 +779,10 @@
                                     <div>
                                         <p className="text-xs text-gray-400 mb-1">Material Cost</p>
                                         <p className="font-bold text-purple-400">{formatCurrency(fin.materialCost)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-400 mb-1">Total Hours</p>
+                                        <p className="font-bold text-yellow-400">{fin.totalHours} hrs</p>
                                     </div>
                                 </div>
 
@@ -756,6 +808,11 @@
                                     <span className="font-bold text-sm">Log Materials</span>
                                 </button>
                             </div>
+
+                            <button onClick={() => setView('roster-job')} className="w-full bg-gray-800 border border-gray-700 hover:border-yellow-400 text-white p-4 rounded-xl flex items-center justify-center gap-2 transition-colors shadow-sm">
+                                <Calendar className="text-yellow-400" size={20} />
+                                <span className="font-bold text-sm">Roster Days</span>
+                            </button>
 
                             <div className="space-y-4">
                                 <h3 className="font-bold text-white border-b border-gray-700 pb-2 flex items-center gap-2"><FileText size={16}/> Recent Logs</h3>
@@ -1305,6 +1362,19 @@
                     .sort((a, b) => b.hrs - a.hrs);
                 const maxHrs = Math.max(1, ...hoursByPerson.map(p => p.hrs));
 
+                // Jobs not yet completed, longest-running first (by start date, or by
+                // when the job was created if no start date is set).
+                const today = new Date();
+                const runningJobs = scopedProjects
+                    .filter(p => p.status !== 'Completed')
+                    .map(p => {
+                        const start = p.startDate ? new Date(p.startDate) : (p.date ? new Date(p.date) : today);
+                        const days = Math.max(0, Math.floor((today - start) / 86400000));
+                        return { id: p.id, name: p.name, status: p.status, days, hasStart: !!p.startDate };
+                    })
+                    .sort((a, b) => b.days - a.days);
+                const maxDays = Math.max(1, ...runningJobs.map(j => j.days));
+
                 // Donut geometry for labour vs materials
                 const R = 42, C = 2 * Math.PI * R;
                 const labourFrac = totalSpend > 0 ? totalLabour / totalSpend : 0;
@@ -1442,6 +1512,213 @@
                                 </div>
                             )}
                         </Section>
+
+                        {/* Longest-running incomplete jobs */}
+                        <Section icon={<Clock size={14}/>} title="Running Longest (Not Completed)">
+                            {runningJobs.length === 0 ? (
+                                <p className="text-gray-500 text-sm text-center py-4">No open jobs in this view.</p>
+                            ) : (
+                                <div className="space-y-4">
+                                    {runningJobs.map(j => (
+                                        <div key={j.id}>
+                                            <div className="flex justify-between items-baseline mb-1">
+                                                <span className="text-sm font-bold text-white truncate max-w-[55%]">{j.name}</span>
+                                                <span className="text-sm font-bold flex items-center gap-2">
+                                                    <span className="text-white">{j.days} {j.days === 1 ? 'day' : 'days'}</span>
+                                                    <span className="text-[11px] text-gray-400">{j.status}</span>
+                                                </span>
+                                            </div>
+                                            <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                                                <div className="h-full rounded-full bg-orange-400" style={{ width: `${(j.days / maxDays) * 100}%` }}></div>
+                                            </div>
+                                            {!j.hasStart && <p className="text-[10px] text-gray-500 mt-0.5">from date added (no start date set)</p>}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </Section>
+                    </div>
+                );
+            };
+
+            // --- VIEW: ROSTER (calendar) ---
+            const renderRoster = () => {
+                const ref = parseYMD(rosterRef);
+                const todayYMD = formatYMD(new Date());
+                const pName = id => (people.find(p => p.id === id) || {}).name || 'Unknown';
+                const jName = id => (projects.find(p => p.id === id) || {}).name || 'Unknown';
+                const entriesFor = ymd => rosterEntries.filter(r => r.date === ymd);
+
+                const shift = (n) => {
+                    const d = parseYMD(rosterRef);
+                    if (rosterMode === 'month') d.setMonth(d.getMonth() + n);
+                    else if (rosterMode === 'week') d.setDate(d.getDate() + 7 * n);
+                    else d.setDate(d.getDate() + n);
+                    setRosterRef(formatYMD(d));
+                };
+
+                const addAssignment = () => {
+                    if (!assignSite || !assignPerson) return alert('Pick a site and a person.');
+                    if (rosterEntries.some(r => r.date === rosterRef && r.projectId === assignSite && r.personId === assignPerson)) return alert('That person is already on that site for this day.');
+                    const entry = { id: 'rost_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), projectId: assignSite, personId: assignPerson, date: rosterRef };
+                    handleSetRoster([...rosterEntries, entry], 'upsert', entry);
+                    setAssignPerson('');
+                };
+                const removeEntry = (entry) => handleSetRoster(rosterEntries.filter(r => r.id !== entry.id), 'delete', entry);
+
+                let label = '';
+                if (rosterMode === 'month') label = ref.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+                else if (rosterMode === 'week') { const s = startOfWeekMon(ref); const e = new Date(s); e.setDate(s.getDate() + 6); label = `${s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} - ${e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`; }
+                else label = ref.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+
+                const monthCells = [];
+                if (rosterMode === 'month') {
+                    const start = startOfWeekMon(new Date(ref.getFullYear(), ref.getMonth(), 1));
+                    for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); monthCells.push(d); }
+                }
+
+                return (
+                    <div className="p-5 space-y-4 pb-24 relative">
+                        <CloudIndicator />
+                        <h1 className="text-2xl font-bold text-yellow-400 mt-8">Roster</h1>
+
+                        <div className="flex gap-2">
+                            {['day', 'week', 'month'].map(m => (
+                                <button key={m} onClick={() => setRosterMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-bold capitalize ${rosterMode === m ? 'bg-yellow-400 text-gray-900' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}>{m}</button>
+                            ))}
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                            <button onClick={() => shift(-1)} className="p-2 bg-gray-800 rounded-lg border border-gray-700"><ChevronRight size={18} className="rotate-180 text-gray-300" /></button>
+                            <div className="text-center">
+                                <p className="font-bold text-white">{label}</p>
+                                <button onClick={() => setRosterRef(todayYMD)} className="text-[11px] text-yellow-400 font-bold">Today</button>
+                            </div>
+                            <button onClick={() => shift(1)} className="p-2 bg-gray-800 rounded-lg border border-gray-700"><ChevronRight size={18} className="text-gray-300" /></button>
+                        </div>
+
+                        {rosterMode === 'month' && (
+                            <div>
+                                <div className="grid grid-cols-7 gap-1 mb-1">
+                                    {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => <div key={i} className="text-center text-[10px] font-bold text-gray-500">{d}</div>)}
+                                </div>
+                                <div className="grid grid-cols-7 gap-1">
+                                    {monthCells.map((d, i) => {
+                                        const ymd = formatYMD(d); const inMonth = d.getMonth() === ref.getMonth(); const count = entriesFor(ymd).length; const isToday = ymd === todayYMD;
+                                        return (
+                                            <button key={i} onClick={() => { setRosterRef(ymd); setRosterMode('day'); }} className={`aspect-square rounded-lg flex flex-col items-center justify-center text-xs ${inMonth ? 'bg-gray-800 border border-gray-700' : 'bg-gray-900/40 border border-transparent text-gray-600'} ${isToday ? 'ring-1 ring-yellow-400' : ''}`}>
+                                                <span className={inMonth ? 'text-white' : ''}>{d.getDate()}</span>
+                                                {count > 0 && <span className="mt-0.5 text-[9px] font-bold text-gray-900 bg-yellow-400 rounded-full px-1.5">{count}</span>}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                <p className="text-[11px] text-gray-500 mt-2 text-center">Tap a day to view and edit its roster.</p>
+                            </div>
+                        )}
+
+                        {rosterMode === 'week' && (
+                            <div className="space-y-2">
+                                {Array.from({ length: 7 }).map((_, i) => {
+                                    const s = startOfWeekMon(ref); const d = new Date(s); d.setDate(s.getDate() + i); const ymd = formatYMD(d); const ents = entriesFor(ymd); const isToday = ymd === todayYMD;
+                                    return (
+                                        <div key={i} className={`bg-gray-800 rounded-xl border ${isToday ? 'border-yellow-400' : 'border-gray-700'} p-3`}>
+                                            <div className="flex justify-between items-center mb-1">
+                                                <button onClick={() => { setRosterRef(ymd); setRosterMode('day'); }} className="font-bold text-white text-sm">{d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })}</button>
+                                                <button onClick={() => { setRosterRef(ymd); setRosterMode('day'); }} className="text-yellow-400 text-xs font-bold flex items-center gap-1"><Plus size={12} /> Add</button>
+                                            </div>
+                                            {ents.length === 0 ? <p className="text-xs text-gray-500">No one rostered.</p> :
+                                                <div className="flex flex-wrap gap-1">
+                                                    {ents.map(e => (
+                                                        <span key={e.id} className="text-[11px] bg-gray-900 border border-gray-700 rounded-full px-2 py-1 text-gray-200 flex items-center gap-1">
+                                                            {pName(e.personId)} <span className="text-gray-500">@ {jName(e.projectId)}</span>
+                                                            <button onClick={() => removeEntry(e)} className="text-gray-500 hover:text-red-400"><X size={11} /></button>
+                                                        </span>
+                                                    ))}
+                                                </div>}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
+                        {rosterMode === 'day' && (
+                            <div className="space-y-4">
+                                <div className="bg-gray-800 rounded-xl border border-gray-700 p-4 space-y-3">
+                                    <h3 className="text-sm font-bold text-white">Assign someone</h3>
+                                    <select value={assignSite} onChange={e => setAssignSite(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm appearance-none focus:border-yellow-400 outline-none">
+                                        <option value="">Select site...</option>
+                                        {projects.filter(p => p.status !== 'Completed').map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                    </select>
+                                    <select value={assignPerson} onChange={e => setAssignPerson(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm appearance-none focus:border-yellow-400 outline-none">
+                                        <option value="">Select person...</option>
+                                        {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                    </select>
+                                    <button onClick={addAssignment} className="w-full bg-yellow-400 text-gray-900 font-bold py-3 rounded-xl flex justify-center items-center gap-2"><Plus size={18} /> Add to {prettyDate(rosterRef)}</button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {entriesFor(rosterRef).length === 0 ? <p className="text-center text-gray-500 text-sm py-6">No one rostered for this day.</p> :
+                                        entriesFor(rosterRef).map(e => (
+                                            <div key={e.id} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center">
+                                                <div>
+                                                    <p className="font-bold text-white text-sm">{pName(e.personId)}</p>
+                                                    <p className="text-xs text-gray-400">{jName(e.projectId)}</p>
+                                                </div>
+                                                <button onClick={() => removeEntry(e)} className="text-gray-500 hover:text-red-400 p-1"><Trash2 size={16} /></button>
+                                            </div>
+                                        ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            // --- VIEW: ROSTER FOR A JOB ---
+            const renderRosterJob = () => {
+                if (!activeProject) return null;
+                const pName = id => (people.find(p => p.id === id) || {}).name || 'Unknown';
+                const jobEntries = rosterEntries.filter(r => r.projectId === activeProject.id).sort((a, b) => a.date < b.date ? -1 : 1);
+
+                const addJobRoster = () => {
+                    if (!jobRosterPerson) return alert('Pick a person.');
+                    if (rosterEntries.some(r => r.date === jobRosterDate && r.projectId === activeProject.id && r.personId === jobRosterPerson)) return alert('That person is already rostered here for that day.');
+                    const entry = { id: 'rost_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), projectId: activeProject.id, personId: jobRosterPerson, date: jobRosterDate };
+                    handleSetRoster([...rosterEntries, entry], 'upsert', entry);
+                    setJobRosterPerson('');
+                };
+                const removeEntry = (entry) => handleSetRoster(rosterEntries.filter(r => r.id !== entry.id), 'delete', entry);
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => setView('project-detail')} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20} /> Back</button>
+                        <h2 className="text-2xl font-bold text-white mb-1">Roster</h2>
+                        <p className="text-yellow-400 text-sm mb-6">{activeProject.name}</p>
+
+                        <div className="bg-gray-800 rounded-xl border border-gray-700 p-4 space-y-3 mb-6">
+                            <h3 className="text-sm font-bold text-white">Add a day</h3>
+                            <input type="date" value={jobRosterDate} onChange={e => setJobRosterDate(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm focus:border-yellow-400 outline-none" />
+                            <select value={jobRosterPerson} onChange={e => setJobRosterPerson(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm appearance-none focus:border-yellow-400 outline-none">
+                                <option value="">Select person...</option>
+                                {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                            <button onClick={addJobRoster} className="w-full bg-yellow-400 text-gray-900 font-bold py-3 rounded-xl flex justify-center items-center gap-2"><Plus size={18} /> Add to Roster</button>
+                        </div>
+
+                        <h3 className="font-bold text-white border-b border-gray-700 pb-2 mb-3 flex items-center gap-2"><Calendar size={16} /> Scheduled Days</h3>
+                        <div className="space-y-2">
+                            {jobEntries.length === 0 ? <p className="text-center text-gray-500 text-sm py-4">No days rostered yet.</p> :
+                                jobEntries.map(e => (
+                                    <div key={e.id} className="bg-gray-800 p-3 rounded-lg border border-gray-700 flex justify-between items-center">
+                                        <div>
+                                            <p className="font-bold text-white text-sm">{prettyDate(e.date)}</p>
+                                            <p className="text-xs text-gray-400">{pName(e.personId)}</p>
+                                        </div>
+                                        <button onClick={() => removeEntry(e)} className="text-gray-500 hover:text-red-400 p-1"><Trash2 size={16} /></button>
+                                    </div>
+                                ))}
+                        </div>
                     </div>
                 );
             };
@@ -1483,11 +1760,13 @@
                 if (view === 'edit-time') return renderEditTime();
                 if (view === 'add-material') return renderAddMaterial();
                 if (view === 'edit-material') return renderEditMaterial();
+                if (view === 'roster-job') return renderRosterJob();
                 
                 switch(activeTab) {
                     case 'dashboard': return renderDashboard();
                     case 'projects': return renderProjects();
                     case 'analytics': return renderAnalytics();
+                    case 'roster': return renderRoster();
                     case 'team': return renderTeam();
                     case 'settings': return renderSettings();
                     default: return renderDashboard();
@@ -1531,9 +1810,10 @@
                     </div>
 
                     {showNav && (
-                        <nav className="fixed bottom-0 w-full max-w-md bg-gray-800 border-t border-gray-700 px-3 py-3 flex justify-around items-center z-40 pb-safe">
+                        <nav className="fixed bottom-0 w-full max-w-md bg-gray-800 border-t border-gray-700 px-1.5 py-3 flex justify-around items-center z-40 pb-safe">
                             <NavItem icon={<Home />} label="Home" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
                             <NavItem icon={<Briefcase />} label="Jobs" active={activeTab === 'projects'} onClick={() => setActiveTab('projects')} />
+                            <NavItem icon={<Calendar />} label="Roster" active={activeTab === 'roster'} onClick={() => setActiveTab('roster')} />
                             <NavItem icon={<BarChart3 />} label="Analytics" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
                             <NavItem icon={<Users />} label="Team" active={activeTab === 'team'} onClick={() => setActiveTab('team')} />
                             <NavItem icon={<Settings />} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
