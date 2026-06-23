@@ -132,6 +132,7 @@
             const [timeLogs, setTimeLogs] = useState([]);
             const [materialLogs, setMaterialLogs] = useState([]);
             const [rosterEntries, setRosterEntries] = useState([]);
+            const [payments, setPayments] = useState([]);
 
             // Tolerant parse: accepts strict JSON or the JS object literal you copy
             // straight out of the Firebase console (unquoted keys).
@@ -195,7 +196,7 @@
             useEffect(() => {
                 if (!db || !user) return;
                 setLoading(true);
-                const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs, rosterEntries: setRosterEntries };
+                const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs, rosterEntries: setRosterEntries, payments: setPayments };
                 const unsubs = Object.keys(setters).map(name =>
                     onSnapshot(collection(db, name),
                         (snap) => { setters[name](snap.docs.map(d => d.data())); setLoading(false); },
@@ -228,6 +229,7 @@
             const handleSetTimeLogs = (newLogs, action, record) => { setTimeLogs(newLogs); pushOp(action, 'timeLogs', record); };
             const handleSetMaterialLogs = (newLogs, action, record) => { setMaterialLogs(newLogs); pushOp(action, 'materialLogs', record); };
             const handleSetRoster = (newEntries, action, record) => { setRosterEntries(newEntries); pushOp(action, 'rosterEntries', record); };
+            const handleSetPayments = (newPayments, action, record) => { setPayments(newPayments); pushOp(action, 'payments', record); };
 
             // Date helpers (local time, no timezone drift)
             const formatYMD = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -247,6 +249,18 @@
             const [assignPerson, setAssignPerson] = useState('');
             const [jobRosterDate, setJobRosterDate] = useState(new Date().toISOString().split('T')[0]);
             const [jobRosterPerson, setJobRosterPerson] = useState('');
+
+            // --- Payment State ---
+            const PAY_STAGES = ['Preliminary Works', 'Containment', 'First Fix', 'Second Fix', 'Testing & Commissioning', 'Snagging', 'Handover / Certification', 'Other'];
+            const [payAmount, setPayAmount] = useState('');
+            const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
+            const [payStage, setPayStage] = useState('Preliminary Works');
+            const [payOther, setPayOther] = useState('');
+            const [editingPayment, setEditingPayment] = useState(null);
+            const [editPayAmount, setEditPayAmount] = useState('');
+            const [editPayDate, setEditPayDate] = useState('');
+            const [editPayStage, setEditPayStage] = useState('Preliminary Works');
+            const [editPayOther, setEditPayOther] = useState('');
             const [newProjName, setNewProjName] = useState('');
             const [newProjClient, setNewProjClient] = useState('');
             const [newProjQuote, setNewProjQuote] = useState('');
@@ -314,14 +328,17 @@
 
                 let projectTime = timeLogs.filter(t => t.projectId === projectId);
                 let projectMaterials = materialLogs.filter(m => m.projectId === projectId);
+                let projectPayments = payments.filter(p => p.projectId === projectId);
 
                 if (startDate) {
                     projectTime = projectTime.filter(t => t.date.split('T')[0] >= startDate);
                     projectMaterials = projectMaterials.filter(m => m.date.split('T')[0] >= startDate);
+                    projectPayments = projectPayments.filter(p => (p.date || '').split('T')[0] >= startDate);
                 }
                 if (endDate) {
                     projectTime = projectTime.filter(t => t.date.split('T')[0] <= endDate);
                     projectMaterials = projectMaterials.filter(m => m.date.split('T')[0] <= endDate);
+                    projectPayments = projectPayments.filter(p => (p.date || '').split('T')[0] <= endDate);
                 }
 
                 const labourCost = projectTime.reduce((total, log) => {
@@ -333,12 +350,17 @@
 
                 const materialCost = projectMaterials.reduce((total, log) => total + Number(log.cost), 0);
                 const totalCost = labourCost + materialCost;
-                
-                const currentProfit = project.quote - totalCost;
-                const profitMargin = project.quote > 0 ? (currentProfit / project.quote) * 100 : 0;
-                const spendPercentage = project.quote > 0 ? (totalCost / project.quote) * 100 : 0;
+                const received = projectPayments.reduce((total, p) => total + Number(p.amount), 0);
 
-                return { labourCost, materialCost, totalCost, totalHours, currentProfit, profitMargin, spendPercentage, quote: project.quote };
+                // Potential = best case if paid in full at quote. Realised = money
+                // actually in (stage payments) minus what has been spent.
+                const potentialProfit = project.quote - totalCost;
+                const realisedProfit = received - totalCost;
+                const potentialMargin = project.quote > 0 ? (potentialProfit / project.quote) * 100 : 0;
+                const spendPercentage = project.quote > 0 ? (totalCost / project.quote) * 100 : 0;
+                const receivedPercentage = project.quote > 0 ? (received / project.quote) * 100 : 0;
+
+                return { labourCost, materialCost, totalCost, totalHours, received, potentialProfit, realisedProfit, potentialMargin, spendPercentage, receivedPercentage, quote: project.quote };
             };
 
             // Cloud Status Indicator (real-time)
@@ -357,12 +379,12 @@
             const exportAccountantCSV = () => {
                 let csvContent = "data:text/csv;charset=utf-8,";
                 csvContent += `Accountant Report (${exportStartDate || 'All Time'} to ${exportEndDate || 'All Time'})\n\n`;
-                csvContent += "Project Name,Client,Status,Quoted (EUR),Labour Cost (EUR),Material Cost (EUR),Total Cost (EUR),Current Profit (EUR)\n";
+                csvContent += "Project Name,Client,Status,Quoted (EUR),Labour Cost (EUR),Material Cost (EUR),Total Cost (EUR),Received (EUR),Potential Profit (EUR),Realised Profit (EUR)\n";
 
                 projects.forEach(p => {
                     const fin = getProjectFinancials(p.id, exportStartDate, exportEndDate);
                     if (fin) {
-                        csvContent += `"${p.name}","${p.client}","${p.status}",${fin.quote},${fin.labourCost},${fin.materialCost},${fin.totalCost},${fin.currentProfit}\n`;
+                        csvContent += `"${p.name}","${p.client}","${p.status}",${fin.quote},${fin.labourCost},${fin.materialCost},${fin.totalCost},${fin.received},${fin.potentialProfit},${fin.realisedProfit}\n`;
                     }
                 });
 
@@ -404,6 +426,15 @@
                     const dateObj = new Date(m.date);
                     const formattedDate = `${dateObj.getDate().toString().padStart(2, '0')}/${(dateObj.getMonth()+1).toString().padStart(2, '0')}/${dateObj.getFullYear()}`;
                     csvContent += `${formattedDate},"${m.item}",${m.cost}\n`;
+                });
+
+                csvContent += `\n--- PAYMENTS RECEIVED ---\n`;
+                csvContent += `Date,Stage,Amount (EUR)\n`;
+                const pPay = payments.filter(p => p.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+                pPay.forEach(p => {
+                    const dateObj = new Date(p.date);
+                    const formattedDate = `${dateObj.getDate().toString().padStart(2, '0')}/${(dateObj.getMonth()+1).toString().padStart(2, '0')}/${dateObj.getFullYear()}`;
+                    csvContent += `${formattedDate},"${p.label || ''}",${p.amount}\n`;
                 });
 
                 const encodedUri = encodeURI(csvContent);
@@ -468,8 +499,8 @@
                                                 <span className={`text-[10px] font-bold px-2 py-1 rounded-full text-white ${statusColor}`}>{statusText}</span>
                                             </div>
                                             <div className="flex justify-between text-sm mb-2">
-                                                <span className="text-gray-400">Margin: <span className={fin.profitMargin > 20 ? 'text-green-400' : fin.profitMargin > 0 ? 'text-orange-400' : 'text-red-400'}>{fin.profitMargin.toFixed(1)}%</span></span>
-                                                <span className="text-white font-bold">{formatCurrency(fin.currentProfit)}</span>
+                                                <span className="text-gray-400">Potential: <span className={fin.potentialMargin > 20 ? 'text-green-400' : fin.potentialMargin > 0 ? 'text-orange-400' : 'text-red-400'}>{fin.potentialMargin.toFixed(1)}%</span></span>
+                                                <span className="text-white font-bold">{formatCurrency(fin.potentialProfit)}</span>
                                             </div>
                                             <div className="w-full bg-gray-700 rounded-full h-2">
                                                 <div className={`${statusColor} h-2 rounded-full`} style={{ width: `${Math.min(fin.spendPercentage, 100)}%` }}></div>
@@ -650,12 +681,18 @@
                 const handleDelete = () => {
                     const tl = timeLogs.filter(t => t.projectId === activeProject.id);
                     const ml = materialLogs.filter(m => m.projectId === activeProject.id);
-                    const msg = 'Delete "' + activeProject.name + '"?\n\nThis also removes its ' + tl.length + ' time and ' + ml.length + ' material entries. This cannot be undone.';
+                    const pm = payments.filter(p => p.projectId === activeProject.id);
+                    const rs = rosterEntries.filter(r => r.projectId === activeProject.id);
+                    const msg = 'Delete "' + activeProject.name + '"?\n\nThis also removes its ' + tl.length + ' time, ' + ml.length + ' material and ' + pm.length + ' payment entries, plus ' + rs.length + ' roster days. This cannot be undone.';
                     if (!window.confirm(msg)) return;
                     tl.forEach(t => pushOp('delete', 'timeLogs', t));
                     ml.forEach(m => pushOp('delete', 'materialLogs', m));
+                    pm.forEach(p => pushOp('delete', 'payments', p));
+                    rs.forEach(r => pushOp('delete', 'rosterEntries', r));
                     setTimeLogs(timeLogs.filter(t => t.projectId !== activeProject.id));
                     setMaterialLogs(materialLogs.filter(m => m.projectId !== activeProject.id));
+                    setPayments(payments.filter(p => p.projectId !== activeProject.id));
+                    setRosterEntries(rosterEntries.filter(r => r.projectId !== activeProject.id));
                     handleSetProjects(projects.filter(p => p.id !== activeProject.id), 'delete', activeProject);
                     setActiveProject(null);
                     setView('main');
@@ -704,6 +741,7 @@
                 const fin = getProjectFinancials(activeProject.id);
                 const pTimeLogs = timeLogs.filter(t => t.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
                 const pMaterialLogs = materialLogs.filter(m => m.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+                const pPayments = payments.filter(p => p.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
 
                 const updateStatus = (newStatus) => {
                     const updated = { ...activeProject, status: newStatus };
@@ -786,14 +824,26 @@
                                     </div>
                                 </div>
 
-                                <div className={`mt-4 p-3 rounded-lg border ${fin.currentProfit > 0 ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'} flex justify-between items-center`}>
-                                    <div>
-                                        <p className={`text-xs font-bold uppercase ${fin.currentProfit > 0 ? 'text-green-400' : 'text-red-400'}`}>Current Profit</p>
-                                        <p className={`text-xl font-bold ${fin.currentProfit > 0 ? 'text-green-500' : 'text-red-500'}`}>{formatCurrency(fin.currentProfit)}</p>
+                                <div className="mt-4 grid grid-cols-2 gap-3">
+                                    <div className={`p-3 rounded-lg border ${fin.potentialProfit > 0 ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'}`}>
+                                        <p className={`text-xs font-bold uppercase ${fin.potentialProfit > 0 ? 'text-green-400' : 'text-red-400'}`}>Potential Profit</p>
+                                        <p className={`text-lg font-bold ${fin.potentialProfit > 0 ? 'text-green-500' : 'text-red-500'}`}>{formatCurrency(fin.potentialProfit)}</p>
+                                        <p className="text-[11px] text-gray-400 mt-0.5">{fin.potentialMargin.toFixed(0)}% margin · if paid in full</p>
                                     </div>
-                                    <div className="text-right">
-                                        <p className="text-xs text-gray-400">Margin</p>
-                                        <p className="text-lg font-bold text-white">{fin.profitMargin.toFixed(1)}%</p>
+                                    <div className={`p-3 rounded-lg border ${fin.realisedProfit >= 0 ? 'bg-gray-900/40 border-gray-600' : 'bg-red-900/20 border-red-500/30'}`}>
+                                        <p className={`text-xs font-bold uppercase ${fin.realisedProfit >= 0 ? 'text-yellow-400' : 'text-red-400'}`}>Realised Profit</p>
+                                        <p className={`text-lg font-bold ${fin.realisedProfit >= 0 ? 'text-white' : 'text-red-500'}`}>{formatCurrency(fin.realisedProfit)}</p>
+                                        <p className="text-[11px] text-gray-400 mt-0.5">received minus spend</p>
+                                    </div>
+                                </div>
+
+                                <div className="mt-3 border-t border-gray-700 pt-3">
+                                    <div className="flex justify-between text-sm mb-1">
+                                        <span className="text-gray-400">Received</span>
+                                        <span className="text-white font-bold">{formatCurrency(fin.received)} <span className="text-xs text-gray-500">of {formatCurrency(fin.quote)}</span></span>
+                                    </div>
+                                    <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+                                        <div className="h-full bg-green-500" style={{ width: `${Math.min(fin.receivedPercentage, 100)}%` }}></div>
                                     </div>
                                 </div>
                             </div>
@@ -809,10 +859,16 @@
                                 </button>
                             </div>
 
-                            <button onClick={() => setView('roster-job')} className="w-full bg-gray-800 border border-gray-700 hover:border-yellow-400 text-white p-4 rounded-xl flex items-center justify-center gap-2 transition-colors shadow-sm">
-                                <Calendar className="text-yellow-400" size={20} />
-                                <span className="font-bold text-sm">Roster Days</span>
-                            </button>
+                            <div className="grid grid-cols-2 gap-3">
+                                <button onClick={() => setView('roster-job')} className="bg-gray-800 border border-gray-700 hover:border-yellow-400 text-white p-4 rounded-xl flex items-center justify-center gap-2 transition-colors shadow-sm">
+                                    <Calendar className="text-yellow-400" size={20} />
+                                    <span className="font-bold text-sm">Roster Days</span>
+                                </button>
+                                <button onClick={() => { setPayDate(new Date().toISOString().split('T')[0]); setPayAmount(''); setPayStage('Preliminary Works'); setPayOther(''); setView('add-payment'); }} className="bg-gray-800 border border-gray-700 hover:border-yellow-400 text-white p-4 rounded-xl flex items-center justify-center gap-2 transition-colors shadow-sm">
+                                    <Download className="text-green-400 rotate-180" size={20} />
+                                    <span className="font-bold text-sm">Log Payment</span>
+                                </button>
+                            </div>
 
                             <div className="space-y-4">
                                 <h3 className="font-bold text-white border-b border-gray-700 pb-2 flex items-center gap-2"><FileText size={16}/> Recent Logs</h3>
@@ -855,8 +911,24 @@
                                     </div>
                                 ))}
 
-                                {(pTimeLogs.length === 0 && pMaterialLogs.length === 0) && (
-                                    <p className="text-center text-gray-500 text-sm py-4">No time or materials logged yet.</p>
+                                {pPayments.map(p => (
+                                    <div key={p.id} onClick={() => { setEditingPayment(p); setEditPayDate((p.date || '').split('T')[0]); setEditPayAmount(p.amount); const known = PAY_STAGES.includes(p.label); setEditPayStage(known ? p.label : 'Other'); setEditPayOther(known ? '' : (p.label || '')); setView('edit-payment'); }} className="bg-gray-800 p-3 rounded-lg border border-green-500/30 flex justify-between items-center cursor-pointer hover:bg-gray-700 transition-colors">
+                                        <div className="flex gap-3 items-center">
+                                            <div className="bg-green-500/20 p-2 rounded-full"><Download size={16} className="text-green-400 rotate-180"/></div>
+                                            <div>
+                                                <p className="font-bold text-white text-sm">{p.label || 'Payment'}</p>
+                                                <p className="text-xs text-gray-400">{new Date(p.date).toLocaleDateString('en-GB')}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right flex items-center gap-3">
+                                            <p className="font-bold text-green-400">+{formatCurrency(p.amount)}</p>
+                                            <ChevronRight size={14} className="text-gray-500" />
+                                        </div>
+                                    </div>
+                                ))}
+
+                                {(pTimeLogs.length === 0 && pMaterialLogs.length === 0 && pPayments.length === 0) && (
+                                    <p className="text-center text-gray-500 text-sm py-4">Nothing logged yet.</p>
                                 )}
                             </div>
                         </div>
@@ -1342,13 +1414,15 @@
                 const totalLabour = jobStats.reduce((s, j) => s + j.labourCost, 0);
                 const totalMaterials = jobStats.reduce((s, j) => s + j.materialCost, 0);
                 const totalSpend = totalLabour + totalMaterials;
-                const totalProfit = jobStats.reduce((s, j) => s + j.currentProfit, 0);
+                const totalPotential = jobStats.reduce((s, j) => s + j.potentialProfit, 0);
+                const totalReceived = jobStats.reduce((s, j) => s + j.received, 0);
+                const totalRealised = totalReceived - totalSpend;
 
-                // Profit by job (only jobs with a quote or some spend)
+                // Potential profit by job (only jobs with a quote or some spend)
                 const profitJobs = jobStats
                     .filter(j => j.quote > 0 || j.totalCost > 0)
-                    .sort((a, b) => b.currentProfit - a.currentProfit);
-                const maxAbsProfit = Math.max(1, ...profitJobs.map(j => Math.abs(j.currentProfit)));
+                    .sort((a, b) => b.potentialProfit - a.potentialProfit);
+                const maxAbsProfit = Math.max(1, ...profitJobs.map(j => Math.abs(j.potentialProfit)));
 
                 // Hours per team member (only on the jobs in scope)
                 const hoursByPerson = people
@@ -1415,31 +1489,39 @@
                         {/* KPI row */}
                         <div className="grid grid-cols-2 gap-4">
                             <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
-                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Total Profit</h3>
-                                <p className={`text-2xl font-bold ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatCurrency(totalProfit)}</p>
+                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Potential Profit</h3>
+                                <p className={`text-2xl font-bold ${totalPotential >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatCurrency(totalPotential)}</p>
                             </div>
                             <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
                                 <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Total Spend</h3>
                                 <p className="text-2xl font-bold text-white">{formatCurrency(totalSpend)}</p>
                             </div>
+                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
+                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Received</h3>
+                                <p className="text-2xl font-bold text-green-400">{formatCurrency(totalReceived)}</p>
+                            </div>
+                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-inner">
+                                <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">Realised Profit</h3>
+                                <p className={`text-2xl font-bold ${totalRealised >= 0 ? 'text-white' : 'text-red-400'}`}>{formatCurrency(totalRealised)}</p>
+                            </div>
                         </div>
 
-                        {/* Profit & margin by job */}
-                        <Section icon={<TrendingUp size={14}/>} title="Profit & Margin by Job">
+                        {/* Potential profit & margin by job */}
+                        <Section icon={<TrendingUp size={14}/>} title="Potential Profit & Margin by Job">
                             {profitJobs.length === 0 ? (
                                 <p className="text-gray-500 text-sm text-center py-4">No jobs with figures yet.</p>
                             ) : (
                                 <div className="space-y-4">
                                     {profitJobs.map(j => {
-                                        const pos = j.currentProfit >= 0;
-                                        const barPct = (Math.abs(j.currentProfit) / maxAbsProfit) * 100;
+                                        const pos = j.potentialProfit >= 0;
+                                        const barPct = (Math.abs(j.potentialProfit) / maxAbsProfit) * 100;
                                         return (
                                             <div key={j.id}>
                                                 <div className="flex justify-between items-baseline mb-1">
                                                     <span className="text-sm font-bold text-white truncate max-w-[55%]">{j.name}</span>
                                                     <span className="text-sm font-bold flex items-center gap-2">
-                                                        <span className={pos ? 'text-green-400' : 'text-red-400'}>{formatCurrency(j.currentProfit)}</span>
-                                                        <span className="text-[11px] text-gray-400">{j.profitMargin.toFixed(0)}%</span>
+                                                        <span className={pos ? 'text-green-400' : 'text-red-400'}>{formatCurrency(j.potentialProfit)}</span>
+                                                        <span className="text-[11px] text-gray-400">{j.potentialMargin.toFixed(0)}%</span>
                                                     </span>
                                                 </div>
                                                 <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
@@ -1723,6 +1805,111 @@
                 );
             };
 
+            // --- VIEW: LOG PAYMENT ---
+            const renderAddPayment = () => {
+                if (!activeProject) return null;
+                const handleSave = () => {
+                    if (!payAmount) return alert('Enter a payment amount.');
+                    const label = payStage === 'Other' ? (payOther.trim() || 'Other') : payStage;
+                    const rec = { id: 'pay_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), projectId: activeProject.id, amount: Number(payAmount), date: new Date(payDate).toISOString(), label };
+                    handleSetPayments([rec, ...payments], 'upsert', rec);
+                    setPayAmount(''); setPayOther(''); setPayStage('Preliminary Works'); setPayDate(new Date().toISOString().split('T')[0]);
+                    setView('project-detail');
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => setView('project-detail')} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-white mb-6">Log Payment for<br/><span className="text-yellow-400 text-lg">{activeProject?.name}</span></h2>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Date Received</label>
+                                <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Stage</label>
+                                <select value={payStage} onChange={e => setPayStage(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white appearance-none focus:border-yellow-400 outline-none">
+                                    {PAY_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </div>
+                            {payStage === 'Other' && (
+                                <div>
+                                    <label className="block text-sm font-bold text-gray-400 mb-1">Describe Stage</label>
+                                    <input type="text" value={payOther} onChange={e => setPayOther(e.target.value)} placeholder="e.g. Retention release" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                </div>
+                            )}
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Amount (€)</label>
+                                <input type="number" step="0.01" value={payAmount} onChange={e => setPayAmount(e.target.value)} placeholder="e.g. 2500" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
+                                <Save size={20} /> Save Payment
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: EDIT PAYMENT ---
+            const renderEditPayment = () => {
+                if (!editingPayment) return null;
+                const handleSave = () => {
+                    if (!editPayAmount) return alert('Enter a payment amount.');
+                    const label = editPayStage === 'Other' ? (editPayOther.trim() || 'Other') : editPayStage;
+                    const updated = { ...editingPayment, amount: Number(editPayAmount), date: new Date(editPayDate).toISOString(), label };
+                    handleSetPayments(payments.map(p => p.id === editingPayment.id ? updated : p), 'upsert', updated);
+                    setEditingPayment(null);
+                    setView('project-detail');
+                };
+                const handleDelete = () => {
+                    if (window.confirm('Delete this payment?')) {
+                        handleSetPayments(payments.filter(p => p.id !== editingPayment.id), 'delete', editingPayment);
+                        setEditingPayment(null);
+                        setView('project-detail');
+                    }
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => { setEditingPayment(null); setView('project-detail'); }} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-white mb-6">Edit Payment</h2>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Date Received</label>
+                                <input type="date" value={editPayDate} onChange={e => setEditPayDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Stage</label>
+                                <select value={editPayStage} onChange={e => setEditPayStage(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white appearance-none focus:border-yellow-400 outline-none">
+                                    {PAY_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </div>
+                            {editPayStage === 'Other' && (
+                                <div>
+                                    <label className="block text-sm font-bold text-gray-400 mb-1">Describe Stage</label>
+                                    <input type="text" value={editPayOther} onChange={e => setEditPayOther(e.target.value)} placeholder="e.g. Retention release" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                </div>
+                            )}
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Amount (€)</label>
+                                <input type="number" step="0.01" value={editPayAmount} onChange={e => setEditPayAmount(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+
+                            <div className="pt-4 space-y-3">
+                                <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Save size={20} /> Save Changes
+                                </button>
+                                <button onClick={handleDelete} className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Trash2 size={20} /> Delete Payment
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
             // ==========================================
             // 4. MAIN RENDER ROUTING
             // ==========================================
@@ -1761,6 +1948,8 @@
                 if (view === 'add-material') return renderAddMaterial();
                 if (view === 'edit-material') return renderEditMaterial();
                 if (view === 'roster-job') return renderRosterJob();
+                if (view === 'add-payment') return renderAddPayment();
+                if (view === 'edit-payment') return renderEditPayment();
                 
                 switch(activeTab) {
                     case 'dashboard': return renderDashboard();
