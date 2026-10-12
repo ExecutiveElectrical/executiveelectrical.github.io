@@ -181,7 +181,7 @@
                 setLoading(true);
                 const q = query(collection(db, 'projects'), where('crew', 'array-contains', user.uid));
                 const unsub = onSnapshot(q,
-                    (snap) => { setProjects(snap.docs.map(d => d.data())); setLoading(false); },
+                    (snap) => { setProjects(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); },
                     (err) => { console.error('projects:', err.code); setLoading(false); }
                 );
                 return () => unsub();
@@ -196,10 +196,10 @@
                 const ids = myJobIds.slice(0, 30);
                 const subs = [
                     onSnapshot(query(collection(db, 'tasks'), where('projectId', 'in', ids)),
-                        (snap) => setTasks(snap.docs.map(d => d.data())),
+                        (snap) => setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
                         (err) => console.error('tasks:', err.code)),
                     onSnapshot(query(collection(db, 'shoppingItems'), where('projectId', 'in', ids)),
-                        (snap) => setShoppingItems(snap.docs.map(d => d.data())),
+                        (snap) => setShoppingItems(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
                         (err) => console.error('shoppingItems:', err.code))
                 ];
                 return () => subs.forEach(u => u());

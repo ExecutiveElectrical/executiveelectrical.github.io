@@ -259,7 +259,9 @@
                 return () => { cancelled = true; };
             }, [db, user]);
 
-            // Real-time listeners: each collection streams straight into state, so
+            // Real-time listeners: each collection streams straight into state (each
+            // record takes its id from the document ID, so ones made by hand in the
+            // Firebase console are found too), so
             // every device sees changes the instant they happen. No polling, and two
             // people editing different records never collide (per-document writes).
             useEffect(() => {
@@ -270,7 +272,7 @@
                 const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs, rosterEntries: setRosterEntries, payments: setPayments, tasks: setTasks, shoppingItems: setShoppingItems, cashRates: setCashRates, cashOut: setCashOut, projectFinance: setProjectFinance, users: setUsers };
                 const unsubs = Object.keys(setters).map(name =>
                     onSnapshot(collection(db, name),
-                        (snap) => { setters[name](snap.docs.map(d => d.data())); setLoading(false); },
+                        (snap) => { setters[name](snap.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); },
                         (err) => {
                             console.error('Listener error (' + name + '):', err);
                             if (name === 'projects' && err && err.code === 'permission-denied') setAccessDenied(true);
@@ -2296,7 +2298,9 @@
                             const needFinance = projects.filter(p => p.quote !== undefined || p.payMode !== undefined);
                             const needCrew = projects.filter(p => !Array.isArray(p.crew));
                             const needItems = shoppingItems.filter(n => n.cost !== undefined);
-                            const meOwner = users.find(u => u.id === (user.uid || ''));
+                            const meRec = users.find(u => u.id === (user.uid || ''));
+                            // Same test the rules make: role must be exactly 'owner'.
+                            const meOwner = !!(meRec && meRec.role === 'owner');
                             const todo = needFinance.length + needCrew.length + needItems.length;
 
                             const runMigration = async () => {
@@ -2340,7 +2344,11 @@
                                     {user.uid && (
                                         <p className="text-[11px] text-gray-500 break-all">
                                             Your own UID: <span className="text-gray-300">{user.uid}</span>
-                                            {meOwner ? ' · owner record found' : ' · no owner record yet (create users/' + user.uid + " with role 'owner' in the Firebase console before publishing the new rules)"}
+                                            {meOwner
+                                                ? ' · owner record found - safe to publish the rules'
+                                                : meRec
+                                                    ? ' · a users record exists but its role is "' + (meRec.role === undefined ? 'missing' : meRec.role) + '" - the field must be called role and say exactly owner, all lowercase. Fix it before publishing the rules.'
+                                                    : ' · no owner record yet (create users/' + user.uid + " with role 'owner' in the Firebase console before publishing the new rules)"}
                                         </p>
                                     )}
                                 </div>
