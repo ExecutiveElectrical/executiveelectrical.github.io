@@ -1,7 +1,7 @@
 // Site Crew app - service worker. Network-first for same-origin GETs so a
 // redeploy is picked up straight away; falls back to cache when offline.
-const CACHE = 'crew-shell-v1';
-const SHELL = ['./crew.html', './crew-manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE = 'crew-shell-v2';
+const SHELL = ['./crew.html', './crew-manifest.json', './crew-icon-192.png', './crew-icon-512.png'];
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -10,7 +10,7 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith('crew-shell-') && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

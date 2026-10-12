@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- TITS Crew app icon. Full-bleed background so iPhone and Android can round
+       the corners themselves; the drawing sits inside the central safe zone so
+       Android's circle/squircle masks never clip it. -->
+  <rect width="512" height="512" fill="#111827"/>
+  <g transform="translate(256 256) scale(1.12) translate(-256 -269)">
+  <g fill="none" stroke="#60a5fa" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
+    <!-- left -->
+    <path d="M118 196 C104 286 150 344 208 340 C242 337 256 312 256 290"/>
+    <!-- right -->
+    <path d="M394 196 C408 286 362 344 304 340 C270 337 256 312 256 290"/>
+    <!-- cleavage -->
+    <path d="M226 230 Q252 254 256 290"/>
+    <path d="M286 230 Q260 254 256 290"/>
+  </g>
+  <g fill="#60a5fa">
+    <circle cx="196" cy="292" r="12"/>
+    <circle cx="316" cy="292" r="12"/>
+  </g>
+  </g>
+</svg>

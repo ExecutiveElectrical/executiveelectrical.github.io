@@ -1,6 +1,6 @@
 {
   "name": "TITS Crew - Works & Materials",
-  "short_name": "TITS Crew",
+  "short_name": "Crew",
   "description": "Outstanding works and materials needed for your jobs.",
   "start_url": "./crew.html",
   "scope": "./",
@@ -9,7 +9,23 @@
   "background_color": "#111827",
   "theme_color": "#111827",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+    {
+      "src": "crew-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "crew-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "crew-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }
