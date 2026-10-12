@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Executive Electrical | Cost Tracker</title>
+    <title>TITS | Times Inventory Tracking System</title>
 
     <!-- PWA / install support -->
     <meta name="theme-color" content="#111827">
@@ -59,20 +59,20 @@
     </script>
 
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
+        import React, { useState, useEffect, useRef, useLayoutEffect } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
         import { 
             Home, Briefcase, Users, PieChart, Plus, Clock, Wrench, 
             ChevronRight, ArrowLeft, Save, Activity, Cloud, RefreshCw, 
             UserPlus, FileText, Download, Calendar, X, FileSpreadsheet, Settings, Link, Edit, Trash2, BarChart3, TrendingUp,
-            ClipboardList, ShoppingCart, CheckCircle2, Circle, Check
+            ClipboardList, ShoppingCart, CheckCircle2, Circle, Check, Banknote
         } from 'https://esm.sh/lucide-react@0.294.0';
 
         // Firebase (modular v10) from Google's official module CDN - the three
         // modules share one app instance here, which esm.sh does not reliably do.
-        import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+        import { initializeApp, getApps, getApp, deleteApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+        import { getFirestore, collection, onSnapshot, doc, getDoc, setDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence, createUserWithEmailAndPassword, sendPasswordResetEmail } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 
         // Custom Hook for Local Storage (used for the Script URL)
         function useLocalStorage(key, initialValue) {
@@ -88,6 +88,48 @@
                 try { window.localStorage.setItem(key, JSON.stringify(storedValue)); } catch (error) {}
             }, [key, storedValue]);
             return [storedValue, setStoredValue];
+        }
+
+        // Money boxes group thousands as you type - 1234567 shows as 1,234,567 -
+        // because a run of seven digits is where a missing zero slips through.
+        // The value handed back has no commas, so every sum downstream is unchanged.
+        function groupMoney(raw) {
+            if (raw === null || raw === undefined) return '';
+            const str = String(raw).replace(/[^\d.]/g, '');
+            const dot = str.indexOf('.');
+            let whole = dot === -1 ? str : str.slice(0, dot);
+            const frac = dot === -1 ? null : str.slice(dot + 1).replace(/\./g, '').slice(0, 2);
+            whole = whole.replace(/^0+(?=\d)/, '');
+            const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+            return frac === null ? grouped : (grouped || '0') + '.' + frac;
+        }
+
+        function MoneyInput({ value, onChange, ...rest }) {
+            const ref = useRef(null);
+            const caretFromEnd = useRef(null);
+            const shown = groupMoney(value);
+
+            // Put the caret back the same number of digits from the end, so a
+            // comma appearing in front of it does not shove it along.
+            useLayoutEffect(() => {
+                const el = ref.current;
+                if (!el || caretFromEnd.current === null) return;
+                if (document.activeElement === el) {
+                    let pos = el.value.length, n = caretFromEnd.current;
+                    while (pos > 0 && n > 0) { pos--; if (/[\d.]/.test(el.value[pos])) n--; }
+                    try { el.setSelectionRange(pos, pos); } catch (e) {}
+                }
+                caretFromEnd.current = null;
+            });
+
+            const handle = (e) => {
+                const el = e.target;
+                const at = el.selectionStart === null ? el.value.length : el.selectionStart;
+                caretFromEnd.current = (el.value.slice(at).match(/[\d.]/g) || []).length;
+                onChange(groupMoney(el.value).replace(/,/g, ''));
+            };
+
+            return <input {...rest} ref={ref} type="text" inputMode="decimal" autoComplete="off" value={shown} onChange={handle} />;
         }
 
         function App() {
@@ -137,6 +179,16 @@
             // Per-job checklists: outstanding works to tick off, and materials to buy.
             const [tasks, setTasks] = useState([]);
             const [shoppingItems, setShoppingItems] = useState([]);
+            // Cash jobs: an agreed cash rate per lad per job, and the cash actually
+            // handed over. Internal only - never part of the accountant export
+            // unless it is deliberately switched on.
+            const [cashRates, setCashRates] = useState([]);
+            const [cashOut, setCashOut] = useState([]);
+            // The quote and the cash flag live here, apart from the job record, so
+            // that a crew account can read a job without ever seeing its money.
+            const [projectFinance, setProjectFinance] = useState([]);
+            // One doc per person who can sign in: { id: <auth uid>, role, name }.
+            const [users, setUsers] = useState([]);
 
             // Tolerant parse: accepts strict JSON or the JS object literal you copy
             // straight out of the Firebase console (unquoted keys).
@@ -194,21 +246,40 @@
             // a prompt or we're on iOS Safari (which installs via the Share menu).
             const canInstall = !isStandalone && (deferredPrompt || isIos);
 
+            const [officeRole, setOfficeRole] = useState('checking');   // 'checking' | 'owner' | 'crew' | 'none'
+            const [accessDenied, setAccessDenied] = useState(false);
+            useEffect(() => {
+                setAccessDenied(false);
+                if (!db || !user) { setOfficeRole('checking'); return; }
+                let cancelled = false;
+                setOfficeRole('checking');
+                getDoc(doc(db, 'users', user.uid))
+                    .then(snap => { if (!cancelled) setOfficeRole(snap.exists() ? (snap.data().role || 'none') : 'none'); })
+                    .catch(() => { if (!cancelled) setOfficeRole('none'); });
+                return () => { cancelled = true; };
+            }, [db, user]);
+
             // Real-time listeners: each collection streams straight into state, so
             // every device sees changes the instant they happen. No polling, and two
             // people editing different records never collide (per-document writes).
             useEffect(() => {
-                if (!db || !user) return;
+                // 'none' still loads: before the owner records exist (first-time
+                // setup) owners have no users document yet. The rules decide.
+                if (!db || !user || officeRole === 'checking' || officeRole === 'crew') return;
                 setLoading(true);
-                const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs, rosterEntries: setRosterEntries, payments: setPayments, tasks: setTasks, shoppingItems: setShoppingItems };
+                const setters = { projects: setProjects, people: setPeople, timeLogs: setTimeLogs, materialLogs: setMaterialLogs, rosterEntries: setRosterEntries, payments: setPayments, tasks: setTasks, shoppingItems: setShoppingItems, cashRates: setCashRates, cashOut: setCashOut, projectFinance: setProjectFinance, users: setUsers };
                 const unsubs = Object.keys(setters).map(name =>
                     onSnapshot(collection(db, name),
                         (snap) => { setters[name](snap.docs.map(d => d.data())); setLoading(false); },
-                        (err) => { console.error('Listener error (' + name + '):', err); setLoading(false); }
+                        (err) => {
+                            console.error('Listener error (' + name + '):', err);
+                            if (name === 'projects' && err && err.code === 'permission-denied') setAccessDenied(true);
+                            setLoading(false);
+                        }
                     )
                 );
                 return () => unsubs.forEach(u => u());
-            }, [db, user]);
+            }, [db, user, officeRole]);
 
             // Save a SINGLE record. upsert -> setDoc (keyed by the record's own id),
             // delete -> deleteDoc. The listeners above then update the UI automatically.
@@ -228,14 +299,42 @@
 
             // Wrapped Setters: update local state optimistically (instant UI), then
             // write the one record that changed. The snapshot reconciles right after.
-            const handleSetProjects = (newProjects, action, record) => { setProjects(newProjects); pushOp(action, 'projects', record); };
+            const handleSetProjects = (newProjects, action, record) => {
+                if (action !== 'delete' && record && (record.quote !== undefined || record.payMode !== undefined)) {
+                    if (!projectFinance.some(f => f.id === record.id)) {
+                        const finRec = { id: record.id, quote: Number(record.quote || 0), payMode: record.payMode || 'standard' };
+                        setProjectFinance(prev => [...prev.filter(f => f.id !== finRec.id), finRec]);
+                        pushOp('upsert', 'projectFinance', finRec);
+                    }
+                    const clean = { ...record };
+                    delete clean.quote;
+                    delete clean.payMode;
+                    record = clean;
+                    newProjects = newProjects.map(p => p.id === clean.id ? clean : p);
+                }
+                setProjects(newProjects);
+                pushOp(action, 'projects', record);
+            };
             const handleSetPeople = (newPeople, action, record) => { setPeople(newPeople); pushOp(action, 'people', record); };
             const handleSetTimeLogs = (newLogs, action, record) => { setTimeLogs(newLogs); pushOp(action, 'timeLogs', record); };
             const handleSetMaterialLogs = (newLogs, action, record) => { setMaterialLogs(newLogs); pushOp(action, 'materialLogs', record); };
             const handleSetRoster = (newEntries, action, record) => { setRosterEntries(newEntries); pushOp(action, 'rosterEntries', record); };
             const handleSetPayments = (newPayments, action, record) => { setPayments(newPayments); pushOp(action, 'payments', record); };
             const handleSetTasks = (newTasks, action, record) => { setTasks(newTasks); pushOp(action, 'tasks', record); };
-            const handleSetShopping = (newItems, action, record) => { setShoppingItems(newItems); pushOp(action, 'shoppingItems', record); };
+            const handleSetShopping = (newItems, action, record) => {
+                if (action !== 'delete' && record && record.cost !== undefined) {
+                    const clean = { ...record };
+                    delete clean.cost;
+                    record = clean;
+                    newItems = newItems.map(n => n.id === clean.id ? clean : n);
+                }
+                setShoppingItems(newItems);
+                pushOp(action, 'shoppingItems', record);
+            };
+            const handleSetCashRates = (newRates, action, record) => { setCashRates(newRates); pushOp(action, 'cashRates', record); };
+            const handleSetCashOut = (newCash, action, record) => { setCashOut(newCash); pushOp(action, 'cashOut', record); };
+            const handleSetFinance = (newFin, action, record) => { setProjectFinance(newFin); pushOp(action, 'projectFinance', record); };
+            const handleSetUsers = (newUsers, action, record) => { setUsers(newUsers); pushOp(action, 'users', record); };
 
             // Date helpers (local time, no timezone drift)
             const formatYMD = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -290,6 +389,35 @@
             const [editTimeHours, setEditTimeHours] = useState('');
             const [editTimeNotes, setEditTimeNotes] = useState('');
             
+            // --- Crew Login States ---
+            const [newCrewUid, setNewCrewUid] = useState('');
+            const [newCrewName, setNewCrewName] = useState('');
+            const [newCrewEmail, setNewCrewEmail] = useState('');
+            const [newCrewPwd, setNewCrewPwd] = useState('');
+            const [crewSendLink, setCrewSendLink] = useState(true);
+            const [crewCreating, setCrewCreating] = useState('');
+            const [crewCreated, setCrewCreated] = useState(null);
+            const [showUidFallback, setShowUidFallback] = useState(false);
+            const [migrating, setMigrating] = useState('');
+
+            // --- Cash Job States ---
+            const [newProjCash, setNewProjCash] = useState(false);
+            const [editProjCash, setEditProjCash] = useState(false);
+            const [newPersonCashRate, setNewPersonCashRate] = useState('');
+            const [editPersonCashRate, setEditPersonCashRate] = useState('');
+            const [editingRateFor, setEditingRateFor] = useState(null);   // personId whose job cash rate is being set
+            const [rateInput, setRateInput] = useState('');
+            const [cashPersonId, setCashPersonId] = useState('');
+            const [cashAmount, setCashAmount] = useState('');
+            const [cashDate, setCashDate] = useState(new Date().toISOString().split('T')[0]);
+            const [cashNote, setCashNote] = useState('');
+            const [editingCashOut, setEditingCashOut] = useState(null);
+            const [editCashPersonId, setEditCashPersonId] = useState('');
+            const [editCashAmount, setEditCashAmount] = useState('');
+            const [editCashDate, setEditCashDate] = useState('');
+            const [editCashNote, setEditCashNote] = useState('');
+            const [includeCashJobs, setIncludeCashJobs] = useState(false);   // accountant export: off by default
+
             // --- Outstanding Works / Materials Needed States ---
             const [newTaskText, setNewTaskText] = useState('');
             const [editingTaskId, setEditingTaskId] = useState(null);
@@ -351,6 +479,102 @@
             const newId = (prefix) => prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
             const needLabel = (n) => (n.qty ? n.item + ' (x' + n.qty + ')' : n.item);
 
+            // --- Cash jobs ---
+            // On a cash job the lads are paid an agreed cash rate rather than their
+            // standard rate, so that is the rate the job is costed at. The cash
+            // actually handed over SETTLES that cost - it is not an extra cost on
+            // top, or the same money would be counted twice.
+            // Creating a login from inside the app: a SECOND Firebase app instance
+            // does the sign-up, so your own session is untouched. A plain
+            // createUser call on the main instance would sign you out and sign you
+            // in as the new lad instead.
+            const createCrewLogin = async () => {
+                const name = newCrewName.trim();
+                const email = newCrewEmail.trim();
+                if (!name || !email) { alert('Enter a name and an email address.'); return; }
+                if (users.some(u => (u.email || '').toLowerCase() === email.toLowerCase())) { alert('That email already has access.'); return; }
+
+                // Their password: whatever you typed, else a random one they will
+                // never need if the reset link is being sent.
+                const pwd = newCrewPwd.trim() || (Math.random().toString(36).slice(2, 10) + 'Aa1!');
+                setCrewCreating('Creating login...');
+                setCrewCreated(null);
+
+                let secondary = null;
+                try {
+                    const cfg = parseConfig(fbConfig) || FIREBASE_CONFIG;
+                    secondary = getApps().find(a => a.name === 'crewmaker') || initializeApp(cfg, 'crewmaker');
+                    const secondaryAuth = getAuth(secondary);
+                    const cred = await createUserWithEmailAndPassword(secondaryAuth, email, pwd);
+                    const uid = cred.user.uid;
+
+                    // Give them crew access. Written by you, from your own session.
+                    const rec = { id: uid, role: 'crew', name, email };
+                    handleSetUsers([...users, rec], 'upsert', rec);
+
+                    await signOut(secondaryAuth).catch(() => {});
+
+                    if (crewSendLink) {
+                        await sendPasswordResetEmail(secondaryAuth, email);
+                        setCrewCreating('');
+                        setCrewCreated({ name, email, sent: true });
+                    } else {
+                        setCrewCreating('');
+                        setCrewCreated({ name, email, sent: false, pwd });
+                    }
+                    setNewCrewName(''); setNewCrewEmail(''); setNewCrewPwd('');
+                } catch (e) {
+                    const code = (e && e.code) || '';
+                    let msg = e.message || String(e);
+                    if (code === 'auth/operation-not-allowed') msg = 'Email/Password sign-up is switched off for this project. Turn it on in Firebase console > Authentication > Sign-in method, or add the login by UID below.';
+                    else if (code === 'auth/email-already-in-use') msg = 'That email already has a Firebase account. Add it by UID below instead.';
+                    else if (code === 'auth/weak-password') msg = 'Password too short - it needs at least 6 characters.';
+                    else if (code === 'auth/invalid-email') msg = 'That email address does not look right.';
+                    setCrewCreating('');
+                    alert('Could not create the login.\n\n' + msg);
+                } finally {
+                    if (secondary) { try { await deleteApp(secondary); } catch (err) {} }
+                }
+            };
+
+            const financeFor = (projectId) => projectFinance.find(f => f.id === projectId) || {};
+            const quoteOf = (project) => {
+                if (!project) return 0;
+                const fin = financeFor(project.id);
+                const q = fin.quote !== undefined && fin.quote !== null ? fin.quote : project.quote;
+                return Number(q || 0);
+            };
+            const isCashJob = (project) => {
+                if (!project) return false;
+                const fin = financeFor(project.id);
+                const mode = fin.payMode !== undefined && fin.payMode !== null ? fin.payMode : project.payMode;
+                return mode === 'cash';
+            };
+            // Saving a job writes the name/status half and the money half separately.
+            const saveProjectRecord = (project, finance) => {
+                const stripped = { ...project };
+                delete stripped.quote;
+                delete stripped.payMode;
+                handleSetProjects(projects.some(p => p.id === stripped.id) ? projects.map(p => p.id === stripped.id ? stripped : p) : [...projects, stripped], 'upsert', stripped);
+                const finRec = { id: stripped.id, quote: Number(finance.quote || 0), payMode: finance.payMode || 'standard' };
+                handleSetFinance([...projectFinance.filter(f => f.id !== finRec.id), finRec], 'upsert', finRec);
+                return stripped;
+            };
+            const cashRateFor = (projectId, personId) => {
+                const set = cashRates.find(c => c.projectId === projectId && c.personId === personId);
+                if (set && set.rate !== '' && set.rate !== null && !isNaN(Number(set.rate))) return Number(set.rate);
+                const person = people.find(p => p.id === personId);
+                if (person && person.cashRate !== undefined && person.cashRate !== null && person.cashRate !== '') return Number(person.cashRate);
+                return null;   // nothing agreed yet - fall back to the standard rate
+            };
+            const effectiveRate = (project, personId) => {
+                const person = people.find(p => p.id === personId);
+                const standard = person ? Number(person.rate || 0) : 0;
+                if (!isCashJob(project)) return standard;
+                const cash = cashRateFor(project.id, personId);
+                return cash === null ? standard : cash;
+            };
+
             // Calculate Financials
             const getProjectFinancials = (projectId, startDate = null, endDate = null) => {
                 const project = projects.find(p => p.id === projectId);
@@ -359,38 +583,44 @@
                 let projectTime = timeLogs.filter(t => t.projectId === projectId);
                 let projectMaterials = materialLogs.filter(m => m.projectId === projectId);
                 let projectPayments = payments.filter(p => p.projectId === projectId);
+                let projectCashOut = cashOut.filter(c => c.projectId === projectId);
 
                 if (startDate) {
                     projectTime = projectTime.filter(t => t.date.split('T')[0] >= startDate);
                     projectMaterials = projectMaterials.filter(m => m.date.split('T')[0] >= startDate);
                     projectPayments = projectPayments.filter(p => (p.date || '').split('T')[0] >= startDate);
+                    projectCashOut = projectCashOut.filter(c => (c.date || '').split('T')[0] >= startDate);
                 }
                 if (endDate) {
                     projectTime = projectTime.filter(t => t.date.split('T')[0] <= endDate);
                     projectMaterials = projectMaterials.filter(m => m.date.split('T')[0] <= endDate);
                     projectPayments = projectPayments.filter(p => (p.date || '').split('T')[0] <= endDate);
+                    projectCashOut = projectCashOut.filter(c => (c.date || '').split('T')[0] <= endDate);
                 }
 
-                const labourCost = projectTime.reduce((total, log) => {
-                    const person = people.find(p => p.id === log.personId);
-                    return total + (log.hours * (person?.rate || 0));
-                }, 0);
+                // Costed at the cash rate on a cash job, the standard rate otherwise.
+                const labourCost = projectTime.reduce((total, log) => total + (log.hours * effectiveRate(project, log.personId)), 0);
 
                 const totalHours = projectTime.reduce((total, log) => total + Number(log.hours), 0);
 
                 const materialCost = projectMaterials.reduce((total, log) => total + Number(log.cost), 0);
+                // Cash handed over is deliberately NOT added here: the hours it pays
+                // for are already in labourCost. It is a settlement, not a cost.
+                const cashPaid = projectCashOut.reduce((total, c) => total + Number(c.amount), 0);
+                const cashOwed = labourCost - cashPaid;
                 const totalCost = labourCost + materialCost;
                 const received = projectPayments.reduce((total, p) => total + Number(p.amount), 0);
 
                 // Potential = best case if paid in full at quote. Realised = money
                 // actually in (stage payments) minus what has been spent.
-                const potentialProfit = project.quote - totalCost;
+                const quote = quoteOf(project);
+                const potentialProfit = quote - totalCost;
                 const realisedProfit = received - totalCost;
-                const potentialMargin = project.quote > 0 ? (potentialProfit / project.quote) * 100 : 0;
-                const spendPercentage = project.quote > 0 ? (totalCost / project.quote) * 100 : 0;
-                const receivedPercentage = project.quote > 0 ? (received / project.quote) * 100 : 0;
+                const potentialMargin = quote > 0 ? (potentialProfit / quote) * 100 : 0;
+                const spendPercentage = quote > 0 ? (totalCost / quote) * 100 : 0;
+                const receivedPercentage = quote > 0 ? (received / quote) * 100 : 0;
 
-                return { labourCost, materialCost, totalCost, totalHours, received, potentialProfit, realisedProfit, potentialMargin, spendPercentage, receivedPercentage, quote: project.quote };
+                return { labourCost, materialCost, totalCost, totalHours, received, potentialProfit, realisedProfit, potentialMargin, spendPercentage, receivedPercentage, quote, cashPaid, cashOwed, isCash: isCashJob(project) };
             };
 
             // Cloud Status Indicator (real-time)
@@ -408,13 +638,21 @@
             // --- CSV EXPORT FUNCTIONS ---
             const exportAccountantCSV = () => {
                 let csvContent = "data:text/csv;charset=utf-8,";
-                csvContent += `Accountant Report (${exportStartDate || 'All Time'} to ${exportEndDate || 'All Time'})\n\n`;
-                csvContent += "Project Name,Client,Status,Quoted (EUR),Labour Cost (EUR),Material Cost (EUR),Total Cost (EUR),Received (EUR),Potential Profit (EUR),Realised Profit (EUR)\n";
+                csvContent += `Accountant Report (${exportStartDate || 'All Time'} to ${exportEndDate || 'All Time'})\n`;
 
-                projects.forEach(p => {
+                // Cash jobs stay out of this report unless the box is ticked.
+                const included = projects.filter(p => includeCashJobs || !isCashJob(p));
+                const heldBack = projects.length - included.length;
+                if (!includeCashJobs && heldBack > 0) {
+                    csvContent += `Note:,${heldBack} cash ${heldBack === 1 ? 'job' : 'jobs'} excluded from this report\n`;
+                }
+                csvContent += `\n`;
+                csvContent += "Project Name,Client,Status,Job Type,Quoted (EUR),Labour Cost (EUR),Material Cost (EUR),Total Cost (EUR),Received (EUR),Potential Profit (EUR),Realised Profit (EUR)\n";
+
+                included.forEach(p => {
                     const fin = getProjectFinancials(p.id, exportStartDate, exportEndDate);
                     if (fin) {
-                        csvContent += `"${p.name}","${p.client}","${p.status}",${fin.quote},${fin.labourCost},${fin.materialCost},${fin.totalCost},${fin.received},${fin.potentialProfit},${fin.realisedProfit}\n`;
+                        csvContent += `"${p.name}","${p.client}","${p.status}",${isCashJob(p) ? 'Cash' : 'Standard'},${fin.quote},${fin.labourCost},${fin.materialCost},${fin.totalCost},${fin.received},${fin.potentialProfit},${fin.realisedProfit}\n`;
                     }
                 });
 
@@ -434,7 +672,8 @@
                 csvContent += `Project:,${activeProject.name}\n`;
                 csvContent += `Client:,${activeProject.client}\n`;
                 csvContent += `Status:,${activeProject.status}\n`;
-                csvContent += `Quote:,€${activeProject.quote}\n\n`;
+                csvContent += `Job Type:,${isCashJob(activeProject) ? 'Cash' : 'Standard'}\n`;
+                csvContent += `Quote:,€${quoteOf(activeProject)}\n\n`;
 
                 csvContent += `--- TIME LOGS ---\n`;
                 csvContent += `Date,Person,Hours,Cost (EUR),Notes\n`;
@@ -442,7 +681,7 @@
                 const pTime = timeLogs.filter(t => t.projectId === activeProject.id).sort((a,b) => new Date(b.date) - new Date(a.date));
                 pTime.forEach(t => {
                     const person = people.find(p => p.id === t.personId);
-                    const cost = t.hours * (person?.rate || 0);
+                    const cost = t.hours * effectiveRate(activeProject, t.personId);
                     const dateObj = new Date(t.date);
                     const formattedDate = `${dateObj.getDate().toString().padStart(2, '0')}/${(dateObj.getMonth()+1).toString().padStart(2, '0')}/${dateObj.getFullYear()}`;
                     csvContent += `${formattedDate},"${person?.name || 'Unknown'}",${t.hours},${cost},"${t.notes || ''}"\n`;
@@ -466,6 +705,19 @@
                     const formattedDate = `${dateObj.getDate().toString().padStart(2, '0')}/${(dateObj.getMonth()+1).toString().padStart(2, '0')}/${dateObj.getFullYear()}`;
                     csvContent += `${formattedDate},"${p.label || ''}",${p.amount}\n`;
                 });
+
+                if (isCashJob(activeProject)) {
+                    csvContent += `\n--- CASH OUT (INTERNAL) ---\n`;
+                    csvContent += `Date,Paid To,Amount (EUR),Note\n`;
+                    cashOut.filter(c => c.projectId === activeProject.id)
+                        .sort((a, b) => new Date(b.date) - new Date(a.date))
+                        .forEach(c => {
+                            const who = people.find(p => p.id === c.personId);
+                            const d = new Date(c.date);
+                            const fd = `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+                            csvContent += `${fd},"${who?.name || 'Unknown'}",${c.amount},"${c.note || ''}"\n`;
+                        });
+                }
 
                 csvContent += `\n--- OUTSTANDING WORKS ---\n`;
                 csvContent += `Status,Item,Completed,By\n`;
@@ -495,7 +747,7 @@
             // --- VIEW: HOME / DASHBOARD ---
             const renderDashboard = () => {
                 const ongoingProjects = projects.filter(p => p.status === 'Ongoing');
-                const totalPipeline = projects.filter(p => p.status === 'Quotes Submitted' || p.status === 'Upcoming').reduce((sum, p) => sum + Number(p.quote), 0);
+                const totalPipeline = projects.filter(p => p.status === 'Quotes Submitted' || p.status === 'Upcoming').reduce((sum, p) => sum + quoteOf(p), 0);
                 
                 return (
                     <div className="p-5 space-y-6 pb-24 relative">
@@ -552,7 +804,7 @@
                                                 <div className={`${statusColor} h-2 rounded-full`} style={{ width: `${Math.min(fin.spendPercentage, 100)}%` }}></div>
                                             </div>
 
-                                            {(openTasksFor(project.id) > 0 || openNeedsFor(project.id) > 0) && (
+                                            {(openTasksFor(project.id) > 0 || openNeedsFor(project.id) > 0 || isCashJob(project)) && (
                                                 <div className="flex flex-wrap gap-2 mt-3">
                                                     {openTasksFor(project.id) > 0 && (
                                                         <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-yellow-400/10 text-yellow-400 flex items-center gap-1">
@@ -562,6 +814,11 @@
                                                     {openNeedsFor(project.id) > 0 && (
                                                         <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-purple-400/10 text-purple-400 flex items-center gap-1">
                                                             <ShoppingCart size={11}/> {openNeedsFor(project.id)} to buy
+                                                        </span>
+                                                    )}
+                                                    {isCashJob(project) && (
+                                                        <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-400/10 text-emerald-400 flex items-center gap-1">
+                                                            <Banknote size={11}/> Cash
                                                         </span>
                                                     )}
                                                 </div>
@@ -594,6 +851,16 @@
                                             <input type="date" value={exportEndDate} onChange={e => setExportEndDate(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white focus:border-yellow-400 outline-none" />
                                         </div>
                                         
+                                        <label className="flex items-center justify-between gap-3 bg-gray-900 border border-gray-700 rounded-xl p-3 cursor-pointer">
+                                            <span>
+                                                <span className="block text-sm font-bold text-white">Include cash jobs</span>
+                                                <span className="block text-[11px] text-gray-500 mt-0.5">Off by default. {projects.filter(p => isCashJob(p)).length} cash {projects.filter(p => isCashJob(p)).length === 1 ? 'job' : 'jobs'} on file.</span>
+                                            </span>
+                                            <button type="button" onClick={() => setIncludeCashJobs(!includeCashJobs)} className={`shrink-0 w-14 h-8 rounded-full transition-colors relative ${includeCashJobs ? 'bg-emerald-500' : 'bg-gray-600'}`}>
+                                                <span className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${includeCashJobs ? 'left-7' : 'left-1'}`}></span>
+                                            </button>
+                                        </label>
+
                                         <button onClick={exportAccountantCSV} className="w-full bg-yellow-400 text-gray-900 hover:bg-yellow-300 font-bold py-3 rounded-xl mt-4 flex justify-center items-center gap-2">
                                             <Download size={18} /> Download CSV
                                         </button>
@@ -637,9 +904,9 @@
                                 <div key={project.id} onClick={() => { setActiveProject(project); setView('project-detail'); }} className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-between items-center active:bg-gray-700 transition-colors cursor-pointer shadow-sm">
                                     <div className="flex-1">
                                         <h3 className="font-bold text-white text-lg">{project.name}</h3>
-                                        <p className="text-sm text-gray-400 mb-2">{project.client} • {formatCurrency(project.quote)}</p>
+                                        <p className="text-sm text-gray-400 mb-2">{project.client} • {formatCurrency(quoteOf(project))}</p>
 
-                                        {(openTasksFor(project.id) > 0 || openNeedsFor(project.id) > 0) && (
+                                        {(openTasksFor(project.id) > 0 || openNeedsFor(project.id) > 0 || isCashJob(project)) && (
                                             <div className="flex flex-wrap gap-2 mb-2">
                                                 {openTasksFor(project.id) > 0 && (
                                                     <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-yellow-400/10 text-yellow-400 flex items-center gap-1">
@@ -649,6 +916,11 @@
                                                 {openNeedsFor(project.id) > 0 && (
                                                     <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-purple-400/10 text-purple-400 flex items-center gap-1">
                                                         <ShoppingCart size={11}/> {openNeedsFor(project.id)} to buy
+                                                    </span>
+                                                )}
+                                                {isCashJob(project) && (
+                                                    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-400/10 text-emerald-400 flex items-center gap-1">
+                                                        <Banknote size={11}/> Cash
                                                     </span>
                                                 )}
                                             </div>
@@ -690,10 +962,11 @@
                     if (!newProjName || !newProjQuote) return alert('Please provide a Job Name and Quote amount.');
                     const newProject = {
                         id: 'proj_' + Date.now().toString(),
-                        name: newProjName, client: newProjClient, quote: Number(newProjQuote), status: newProjStatus, startDate: newProjStart || '', date: new Date().toISOString()
+                        name: newProjName, client: newProjClient, status: newProjStatus, startDate: newProjStart || '', date: new Date().toISOString(),
+                        crew: []
                     };
-                    handleSetProjects([...projects, newProject], 'upsert', newProject);
-                    setNewProjName(''); setNewProjClient(''); setNewProjQuote(''); setNewProjStatus('Quotes Submitted'); setNewProjStart('');
+                    saveProjectRecord(newProject, { quote: Number(newProjQuote), payMode: newProjCash ? 'cash' : 'standard' });
+                    setNewProjName(''); setNewProjClient(''); setNewProjQuote(''); setNewProjStatus('Quotes Submitted'); setNewProjStart(''); setNewProjCash(false);
                     setView('main'); setActiveTab('projects');
                 };
 
@@ -713,12 +986,25 @@
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Quoted Value (€)</label>
-                                <input type="number" value={newProjQuote} onChange={e => setNewProjQuote(e.target.value)} placeholder="e.g. 8500" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
+                                <MoneyInput value={newProjQuote} onChange={v => setNewProjQuote(v)} placeholder="e.g. 8500" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Start Date (optional)</label>
                                 <input type="date" value={newProjStart} onChange={e => setNewProjStart(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
                             </div>
+
+                            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+                                <label className="flex items-center justify-between cursor-pointer">
+                                    <span>
+                                        <span className="block text-sm font-bold text-white">Cash job</span>
+                                        <span className="block text-xs text-gray-500 mt-0.5">Costed at agreed cash rates. Kept out of the accountant export by default.</span>
+                                    </span>
+                                    <button type="button" onClick={() => setNewProjCash(!newProjCash)} className={`shrink-0 ml-3 w-14 h-8 rounded-full transition-colors relative ${newProjCash ? 'bg-emerald-500' : 'bg-gray-600'}`}>
+                                        <span className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${newProjCash ? 'left-7' : 'left-1'}`}></span>
+                                    </button>
+                                </label>
+                            </div>
+
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Current Status</label>
                                 <select value={newProjStatus} onChange={e => setNewProjStatus(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white appearance-none focus:border-yellow-400 focus:outline-none">
@@ -745,13 +1031,12 @@
                         ...activeProject,
                         name: editProjName,
                         client: editProjClient,
-                        quote: Number(editProjQuote),
-                        startDate: editProjStart || ''
+                        startDate: editProjStart || '',
+                        crew: activeProject.crew || []
                     };
                     
-                    const updatedProjects = projects.map(p => p.id === activeProject.id ? updatedProject : p);
-                    handleSetProjects(updatedProjects, 'upsert', updatedProject);
-                    setActiveProject(updatedProject);
+                    const saved = saveProjectRecord(updatedProject, { quote: Number(editProjQuote), payMode: editProjCash ? 'cash' : 'standard' });
+                    setActiveProject(saved);
                     setView('project-detail');
                 };
 
@@ -762,6 +1047,9 @@
                     const rs = rosterEntries.filter(r => r.projectId === activeProject.id);
                     const tk = tasks.filter(t => t.projectId === activeProject.id);
                     const nd = shoppingItems.filter(n => n.projectId === activeProject.id);
+                    const fin = projectFinance.find(f => f.id === activeProject.id);
+                    const cr = cashRates.filter(c => c.projectId === activeProject.id);
+                    const co = cashOut.filter(c => c.projectId === activeProject.id);
                     const msg = 'Delete "' + activeProject.name + '"?\n\nThis also removes its ' + tl.length + ' time, ' + ml.length + ' material and ' + pm.length + ' payment entries, plus ' + rs.length + ' roster days, ' + tk.length + ' works items and ' + nd.length + ' materials-needed items. This cannot be undone.';
                     if (!window.confirm(msg)) return;
                     tl.forEach(t => pushOp('delete', 'timeLogs', t));
@@ -770,12 +1058,18 @@
                     rs.forEach(r => pushOp('delete', 'rosterEntries', r));
                     tk.forEach(t => pushOp('delete', 'tasks', t));
                     nd.forEach(n => pushOp('delete', 'shoppingItems', n));
+                    if (fin) pushOp('delete', 'projectFinance', fin);
+                    cr.forEach(c => pushOp('delete', 'cashRates', c));
+                    co.forEach(c => pushOp('delete', 'cashOut', c));
                     setTimeLogs(timeLogs.filter(t => t.projectId !== activeProject.id));
                     setMaterialLogs(materialLogs.filter(m => m.projectId !== activeProject.id));
                     setPayments(payments.filter(p => p.projectId !== activeProject.id));
                     setRosterEntries(rosterEntries.filter(r => r.projectId !== activeProject.id));
                     setTasks(tasks.filter(t => t.projectId !== activeProject.id));
                     setShoppingItems(shoppingItems.filter(n => n.projectId !== activeProject.id));
+                    setProjectFinance(projectFinance.filter(f => f.id !== activeProject.id));
+                    setCashRates(cashRates.filter(c => c.projectId !== activeProject.id));
+                    setCashOut(cashOut.filter(c => c.projectId !== activeProject.id));
                     handleSetProjects(projects.filter(p => p.id !== activeProject.id), 'delete', activeProject);
                     setActiveProject(null);
                     setView('main');
@@ -798,12 +1092,25 @@
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Quoted Value (€)</label>
-                                <input type="number" value={editProjQuote} onChange={e => setEditProjQuote(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
+                                <MoneyInput value={editProjQuote} onChange={v => setEditProjQuote(v)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Start Date (optional)</label>
                                 <input type="date" value={editProjStart} onChange={e => setEditProjStart(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 focus:outline-none" />
                             </div>
+
+                            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+                                <label className="flex items-center justify-between cursor-pointer">
+                                    <span>
+                                        <span className="block text-sm font-bold text-white">Cash job</span>
+                                        <span className="block text-xs text-gray-500 mt-0.5">Costed at agreed cash rates. Kept out of the accountant export by default.</span>
+                                    </span>
+                                    <button type="button" onClick={() => setEditProjCash(!editProjCash)} className={`shrink-0 ml-3 w-14 h-8 rounded-full transition-colors relative ${editProjCash ? 'bg-emerald-500' : 'bg-gray-600'}`}>
+                                        <span className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${editProjCash ? 'left-7' : 'left-1'}`}></span>
+                                    </button>
+                                </label>
+                            </div>
+
                             
                             <div className="pt-2 space-y-3">
                                 <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl flex justify-center items-center gap-2 hover:bg-yellow-300">
@@ -870,7 +1177,7 @@
                 const addNeed = () => {
                     const item = newNeedItem.trim();
                     if (!item) return;
-                    const rec = { id: newId('need'), projectId: activeProject.id, item, qty: newNeedQty.trim(), purchased: false, purchasedAt: '', purchasedBy: '', cost: null, materialLogId: '', createdAt: new Date().toISOString(), createdBy: whoAmI() };
+                    const rec = { id: newId('need'), projectId: activeProject.id, item, qty: newNeedQty.trim(), purchased: false, purchasedAt: '', purchasedBy: '', materialLogId: '', createdAt: new Date().toISOString(), createdBy: whoAmI() };
                     handleSetShopping([...shoppingItems, rec], 'upsert', rec);
                     setNewNeedItem(''); setNewNeedQty('');
                 };
@@ -895,13 +1202,14 @@
                     const n = buyingItem;
                     if (!n) return;
                     const cost = buyCost === '' ? null : Number(buyCost);
-                    const rec = { ...n, purchased: true, purchasedAt: new Date(buyDate).toISOString(), purchasedBy: whoAmI(), cost: cost, materialLogId: '' };
+                    // No price is stored on the item itself - it goes on the material
+                    // entry only, which is owner-only. Crew never hold a cost field.
+                    const rec = { ...n, purchased: true, purchasedAt: new Date(buyDate).toISOString(), purchasedBy: whoAmI(), materialLogId: '' };
+                    delete rec.cost;
                     if (cost !== null && !isNaN(cost) && cost > 0) {
                         const log = { id: newId('mat'), projectId: n.projectId, item: needLabel(n), cost: cost, date: new Date(buyDate).toISOString(), sourceNeedId: n.id };
                         rec.materialLogId = log.id;
                         handleSetMaterialLogs([log, ...materialLogs], 'upsert', log);
-                    } else {
-                        rec.cost = null;
                     }
                     handleSetShopping(shoppingItems.map(x => x.id === n.id ? rec : x), 'upsert', rec);
                     setBuyingItem(null); setBuyCost('');
@@ -916,15 +1224,49 @@
                         : 'Put "' + n.item + '" back on the needed list?';
                     if (!window.confirm(msg)) return;
                     if (linked) handleSetMaterialLogs(materialLogs.filter(m => m.id !== linked.id), 'delete', linked);
-                    const rec = { ...n, purchased: false, purchasedAt: '', purchasedBy: '', cost: null, materialLogId: '' };
+                    const rec = { ...n, purchased: false, purchasedAt: '', purchasedBy: '', materialLogId: '' };
+                    delete rec.cost;
                     handleSetShopping(shoppingItems.map(x => x.id === n.id ? rec : x), 'upsert', rec);
+                };
+
+                // --- Cash out (cash jobs only) ---
+                const cashJob = isCashJob(activeProject);
+                const pCashOut = cashOut.filter(c => c.projectId === activeProject.id).sort((a, b) => new Date(b.date) - new Date(a.date));
+                const cashRows = !cashJob ? [] : people.map(person => {
+                    const hrs = pTimeLogs.filter(t => t.personId === person.id).reduce((sum, t) => sum + Number(t.hours), 0);
+                    const paid = pCashOut.filter(c => c.personId === person.id).reduce((sum, c) => sum + Number(c.amount), 0);
+                    const agreed = cashRateFor(activeProject.id, person.id);
+                    const rate = effectiveRate(activeProject, person.id);
+                    const earned = hrs * rate;
+                    return { person, hrs, rate, agreed, earned, paid, balance: earned - paid };
+                }).filter(r => r.hrs > 0 || r.paid > 0 || r.agreed !== null);
+
+                const cashEarnedTotal = cashRows.reduce((sum, r) => sum + r.earned, 0);
+                const cashPaidTotal = cashRows.reduce((sum, r) => sum + r.paid, 0);
+
+                const saveCashRate = (personId) => {
+                    const id = 'cr_' + activeProject.id + '_' + personId;
+                    const rec = { id, projectId: activeProject.id, personId, rate: rateInput === '' ? null : Number(rateInput) };
+                    handleSetCashRates([...cashRates.filter(c => c.id !== id), rec], 'upsert', rec);
+                    setEditingRateFor(null); setRateInput('');
+                };
+
+                // --- Who can see this job in the crew app ---
+                const crewUsers = users.filter(u => u.role === 'crew');
+                const assigned = activeProject.crew || [];
+                const toggleCrew = (uid) => {
+                    const next = assigned.includes(uid) ? assigned.filter(x => x !== uid) : [...assigned, uid];
+                    const updated = { ...activeProject, crew: next };
+                    handleSetProjects(projects.map(p => p.id === activeProject.id ? updated : p), 'upsert', updated);
+                    setActiveProject(updated);
                 };
 
                 const openEditProject = () => {
                     setEditProjName(activeProject.name);
                     setEditProjClient(activeProject.client);
-                    setEditProjQuote(activeProject.quote);
+                    setEditProjQuote(quoteOf(activeProject));
                     setEditProjStart(activeProject.startDate || '');
+                    setEditProjCash(isCashJob(activeProject));
                     setView('edit-project');
                 };
 
@@ -1039,6 +1381,127 @@
                                     <Download className="text-green-400 rotate-180" size={20} />
                                     <span className="font-bold text-sm">Log Payment</span>
                                 </button>
+                            </div>
+
+                            {/* --- CASH OUT (cash jobs only) --- */}
+                            {cashJob && (
+                                <div className="bg-gray-800 rounded-xl p-4 border border-emerald-500/30 shadow-lg">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <h3 className="font-bold text-white flex items-center gap-2"><Banknote size={16} className="text-emerald-400"/> Cash Out</h3>
+                                        <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400">CASH JOB</span>
+                                    </div>
+                                    <p className="text-[11px] text-gray-500 mb-4">Hours are costed at the cash rate. Cash handed over settles what is owed - it is not counted twice.</p>
+
+                                    <div className="space-y-2">
+                                        {cashRows.length === 0 && <p className="text-gray-500 text-sm py-2 text-center">No hours or cash on this job yet.</p>}
+                                        {cashRows.map(r => (
+                                            <div key={r.person.id} className="bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                                <div className="flex justify-between items-center mb-2">
+                                                    <p className="font-bold text-white text-sm">{r.person.name}</p>
+                                                    {editingRateFor === r.person.id ? (
+                                                        <span className="flex items-center gap-1">
+                                                            <span className="text-xs text-gray-400">€</span>
+                                                            <MoneyInput
+                                                                autoFocus
+                                                                value={rateInput}
+                                                                onChange={v => setRateInput(v)}
+                                                                onKeyDown={e => { if (e.key === 'Enter') saveCashRate(r.person.id); if (e.key === 'Escape') setEditingRateFor(null); }}
+                                                                className="w-20 bg-gray-900 border border-emerald-400 rounded-lg px-2 py-1 text-white text-sm outline-none"
+                                                            />
+                                                            <button onClick={() => saveCashRate(r.person.id)} className="text-emerald-400"><Check size={18}/></button>
+                                                        </span>
+                                                    ) : (
+                                                        <button onClick={() => { setEditingRateFor(r.person.id); setRateInput(r.agreed === null ? '' : r.agreed); }} className="text-xs font-bold text-emerald-400 flex items-center gap-1">
+                                                            {formatCurrency(r.rate)}/hr {r.agreed === null && <span className="text-gray-500 font-normal">(standard)</span>}
+                                                            <Edit size={12} className="text-gray-500"/>
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-2 text-center">
+                                                    <div>
+                                                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Earned</p>
+                                                        <p className="text-sm font-bold text-white">{formatCurrency(r.earned)}</p>
+                                                        <p className="text-[10px] text-gray-500">{r.hrs} hrs</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Paid</p>
+                                                        <p className="text-sm font-bold text-emerald-400">{formatCurrency(r.paid)}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Owed</p>
+                                                        <p className={`text-sm font-bold ${r.balance > 0.005 ? 'text-orange-400' : r.balance < -0.005 ? 'text-red-400' : 'text-gray-500'}`}>{formatCurrency(r.balance)}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {cashRows.length > 0 && (
+                                        <div className="grid grid-cols-3 gap-2 text-center border-t border-gray-700 mt-3 pt-3">
+                                            <div>
+                                                <p className="text-[10px] text-gray-500 uppercase tracking-wider">Total Earned</p>
+                                                <p className="font-bold text-white">{formatCurrency(cashEarnedTotal)}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] text-gray-500 uppercase tracking-wider">Total Paid</p>
+                                                <p className="font-bold text-emerald-400">{formatCurrency(cashPaidTotal)}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] text-gray-500 uppercase tracking-wider">Outstanding</p>
+                                                <p className={`font-bold ${cashEarnedTotal - cashPaidTotal > 0.005 ? 'text-orange-400' : 'text-gray-500'}`}>{formatCurrency(cashEarnedTotal - cashPaidTotal)}</p>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <button onClick={() => { setCashPersonId(cashRows[0]?.person.id || people[0]?.id || ''); setCashAmount(''); setCashNote(''); setCashDate(new Date().toISOString().split('T')[0]); setView('add-cash'); }} className="w-full bg-emerald-500 text-gray-900 font-bold py-3 rounded-xl mt-4 flex justify-center items-center gap-2">
+                                        <Plus size={18}/> Record Cash Paid
+                                    </button>
+
+                                    {pCashOut.length > 0 && (
+                                        <div className="space-y-2 mt-4 border-t border-gray-700 pt-3">
+                                            {pCashOut.map(c => {
+                                                const who = people.find(p => p.id === c.personId);
+                                                return (
+                                                    <div key={c.id} onClick={() => { setEditingCashOut(c); setEditCashPersonId(c.personId); setEditCashAmount(c.amount); setEditCashDate((c.date || '').split('T')[0]); setEditCashNote(c.note || ''); setView('edit-cash'); }} className="flex justify-between items-center bg-gray-900/40 border border-gray-800 rounded-lg p-3 cursor-pointer hover:bg-gray-700/40 transition-colors">
+                                                        <div>
+                                                            <p className="text-sm font-bold text-white">{who?.name || 'Unknown'}</p>
+                                                            <p className="text-[11px] text-gray-500">{new Date(c.date).toLocaleDateString('en-GB')}{c.note ? ' · ' + c.note : ''}</p>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <p className="font-bold text-emerald-400">{formatCurrency(c.amount)}</p>
+                                                            <ChevronRight size={14} className="text-gray-500"/>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* --- SITE ACCESS --- */}
+                            <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 shadow-lg">
+                                <div className="flex items-center justify-between mb-1">
+                                    <h3 className="font-bold text-white flex items-center gap-2"><Users size={16} className="text-blue-400"/> Crew Access</h3>
+                                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${assigned.length > 0 ? 'bg-blue-400 text-gray-900' : 'bg-gray-700 text-gray-400'}`}>{assigned.length}</span>
+                                </div>
+                                <p className="text-[11px] text-gray-500 mb-3">Who can open this job in the crew app. They see the works and materials lists only - never any costs.</p>
+
+                                {crewUsers.length === 0 ? (
+                                    <p className="text-gray-500 text-sm py-2">No crew logins set up yet. Add them under Team.</p>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {crewUsers.map(u => {
+                                            const on = assigned.includes(u.id);
+                                            return (
+                                                <button key={u.id} onClick={() => toggleCrew(u.id)} className={`w-full flex items-center gap-3 rounded-lg p-3 border transition-colors ${on ? 'bg-blue-500/10 border-blue-500/40' : 'bg-gray-900/60 border-gray-700'}`}>
+                                                    {on ? <CheckCircle2 size={20} className="text-blue-400 shrink-0"/> : <Circle size={20} className="text-gray-500 shrink-0"/>}
+                                                    <span className={`text-sm font-bold ${on ? 'text-white' : 'text-gray-400'}`}>{u.name || u.id}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                             </div>
 
                             {/* --- OUTSTANDING WORKS --- */}
@@ -1188,7 +1651,11 @@
                                                     <p className="text-sm text-gray-500 line-through leading-snug">{needLabel(n)}</p>
                                                     <p className="text-[11px] text-gray-600">
                                                         {n.purchasedAt ? new Date(n.purchasedAt).toLocaleDateString('en-GB') : ''}{n.purchasedBy ? ' · ' + n.purchasedBy : ''}
-                                                        {n.cost ? <span className="text-purple-400 font-bold"> · {formatCurrency(n.cost)} on job</span> : <span> · no cost added</span>}
+                                                        {(() => {
+                                                            const linked = n.materialLogId ? materialLogs.find(m => m.id === n.materialLogId) : null;
+                                                            const amount = linked ? linked.cost : n.cost;   // n.cost only on pre-split records
+                                                            return amount ? <span className="text-purple-400 font-bold"> · {formatCurrency(amount)} on job</span> : <span> · no cost added</span>;
+                                                        })()}
                                                     </p>
                                                 </div>
                                                 <button onClick={() => deleteNeed(n)} className="text-gray-700 hover:text-red-400 shrink-0"><Trash2 size={16}/></button>
@@ -1215,7 +1682,7 @@
                                             <div className="text-right flex items-center gap-3">
                                                 <div>
                                                     <p className="font-bold text-white">{log.hours} hrs</p>
-                                                    <p className="text-xs text-gray-400">{formatCurrency(log.hours * (person?.rate || 0))}</p>
+                                                    <p className="text-xs text-gray-400">{formatCurrency(log.hours * effectiveRate(activeProject, log.personId))}</p>
                                                 </div>
                                                 <ChevronRight size={14} className="text-gray-500" />
                                             </div>
@@ -1276,13 +1743,10 @@
                                     <div className="space-y-4">
                                         <div>
                                             <label className="block text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">Cost (€) — optional</label>
-                                            <input
-                                                type="number"
-                                                step="0.01"
-                                                inputMode="decimal"
+                                            <MoneyInput
                                                 autoFocus
                                                 value={buyCost}
-                                                onChange={e => setBuyCost(e.target.value)}
+                                                onChange={v => setBuyCost(v)}
                                                 onKeyDown={e => { if (e.key === 'Enter') confirmBuy(); }}
                                                 placeholder="Leave blank to just tick it off"
                                                 className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white focus:border-purple-400 outline-none"
@@ -1468,7 +1932,7 @@
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Total Cost (€)</label>
-                                <input type="number" step="0.01" value={matCost} onChange={e => setMatCost(e.target.value)} placeholder="e.g. 450.00" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                <MoneyInput value={matCost} onChange={v => setMatCost(v)} placeholder="e.g. 450.00" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
                             </div>
                             <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
                                 <Save size={20} /> Save Material Entry
@@ -1521,7 +1985,7 @@
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Total Cost (€)</label>
-                                <input type="number" step="0.01" value={editMatCost} onChange={e => setEditMatCost(e.target.value)} placeholder="e.g. 450.00" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                <MoneyInput value={editMatCost} onChange={v => setEditMatCost(v)} placeholder="e.g. 450.00" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
                             </div>
 
                             <div className="pt-4 space-y-3">
@@ -1548,7 +2012,7 @@
                         
                         <div className="space-y-3">
                             {people.map(person => (
-                                <div key={person.id} onClick={() => { setEditingPerson(person); setEditPersonName(person.name); setEditPersonRole(person.role || ''); setEditPersonRate(person.rate); setView('edit-person'); }} className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-between items-center cursor-pointer hover:bg-gray-700 transition-colors">
+                                <div key={person.id} onClick={() => { setEditingPerson(person); setEditPersonName(person.name); setEditPersonRole(person.role || ''); setEditPersonRate(person.rate); setEditPersonCashRate(person.cashRate === null || person.cashRate === undefined ? '' : person.cashRate); setView('edit-person'); }} className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-between items-center cursor-pointer hover:bg-gray-700 transition-colors">
                                     <div>
                                         <h3 className="font-bold text-white text-lg">{person.name}</h3>
                                         <p className="text-sm text-gray-400">{person.role}</p>
@@ -1566,6 +2030,107 @@
                         <button onClick={() => setView('add-person')} className="w-full border-2 border-dashed border-gray-700 text-gray-400 rounded-xl py-4 font-bold flex justify-center items-center gap-2 hover:border-yellow-400 hover:text-yellow-400 transition-colors mt-4">
                             <UserPlus size={20} /> Add Team Member
                         </button>
+
+                        {/* Crew logins for the separate crew app */}
+                        <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 shadow-lg mt-8">
+                            <h3 className="font-bold text-white flex items-center gap-2 mb-1"><Users size={16} className="text-blue-400"/> Crew App Logins</h3>
+                            <p className="text-[11px] text-gray-500 mb-4 leading-relaxed">
+                                Accounts that can open the crew app. They see only the jobs you tick them into, and only the works and materials lists - no quotes, rates, costs or payments.
+                            </p>
+
+                            <div className="space-y-2 mb-3">
+                                {users.filter(u => u.role === 'crew').length === 0 && <p className="text-gray-500 text-sm py-1">No crew logins yet.</p>}
+                                {users.filter(u => u.role === 'crew').map(u => {
+                                    const jobCount = projects.filter(p => (p.crew || []).includes(u.id)).length;
+                                    return (
+                                        <div key={u.id} className="flex justify-between items-center bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                            <div className="min-w-0">
+                                                <p className="text-sm font-bold text-white truncate">{u.name || 'Unnamed'}</p>
+                                                <p className="text-[10px] text-gray-500 truncate">{jobCount} {jobCount === 1 ? 'job' : 'jobs'} · {u.email || u.id}</p>
+                                            </div>
+                                            <span className="flex items-center gap-1 shrink-0 ml-2">
+                                                {u.email && (
+                                                    <button onClick={async () => {
+                                                        if (!window.confirm('Email ' + u.email + ' a link to set a new password?')) return;
+                                                        try {
+                                                            await sendPasswordResetEmail(auth, u.email);
+                                                            alert('Sent. Ask ' + (u.name || 'them') + ' to check their inbox, and junk.');
+                                                        } catch (e) {
+                                                            alert('Could not send: ' + (e.message || e));
+                                                        }
+                                                    }} className="text-[11px] font-bold text-blue-400 hover:text-blue-300 px-2 py-1">Reset link</button>
+                                                )}
+                                                <button onClick={() => {
+                                                    if (!window.confirm('Remove ' + (u.name || 'this login') + "? They will lose access to the crew app. This does not delete their Firebase account.")) return;
+                                                    handleSetUsers(users.filter(x => x.id !== u.id), 'delete', u);
+                                                }} className="text-gray-600 hover:text-red-400 p-1"><Trash2 size={16}/></button>
+                                            </span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Create the account from here - no console trip needed */}
+                            <div className="space-y-2 border-t border-gray-700 pt-4">
+                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Add someone</p>
+                                <input type="text" value={newCrewName} onChange={e => setNewCrewName(e.target.value)} placeholder="Name (e.g. Paul)" className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm focus:border-blue-400 outline-none" />
+                                <input type="email" value={newCrewEmail} onChange={e => setNewCrewEmail(e.target.value)} placeholder="Their email address" className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm focus:border-blue-400 outline-none" />
+
+                                <label className="flex items-center justify-between gap-3 bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                    <span className="min-w-0">
+                                        <span className="block text-sm font-bold text-white">Email them a set-up link</span>
+                                        <span className="block text-[11px] text-gray-500 mt-0.5">They pick their own password. Leave off to set one yourself.</span>
+                                    </span>
+                                    <button type="button" onClick={() => setCrewSendLink(!crewSendLink)} className={`shrink-0 w-14 h-8 rounded-full transition-colors relative ${crewSendLink ? 'bg-blue-500' : 'bg-gray-600'}`}>
+                                        <span className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${crewSendLink ? 'left-7' : 'left-1'}`}></span>
+                                    </button>
+                                </label>
+
+                                {!crewSendLink && (
+                                    <input type="text" value={newCrewPwd} onChange={e => setNewCrewPwd(e.target.value)} placeholder="Password (6+ characters, blank = generate one)" className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm focus:border-blue-400 outline-none" />
+                                )}
+
+                                <button onClick={createCrewLogin} disabled={!!crewCreating} className="w-full bg-blue-500 text-white font-bold py-3 rounded-lg flex justify-center items-center gap-2 disabled:opacity-50">
+                                    {crewCreating ? <><RefreshCw size={18} className="animate-spin"/> {crewCreating}</> : <><UserPlus size={18}/> Create Crew Login</>}
+                                </button>
+
+                                {crewCreated && (
+                                    <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3">
+                                        <p className="text-sm font-bold text-green-400">{crewCreated.name} can now sign in.</p>
+                                        {crewCreated.sent ? (
+                                            <p className="text-[11px] text-gray-400 mt-1">A set-up link has gone to {crewCreated.email}. Send them the crew app link too, and tick them into their jobs.</p>
+                                        ) : (
+                                            <p className="text-[11px] text-gray-400 mt-1 break-all">
+                                                Email: <span className="text-white">{crewCreated.email}</span><br/>
+                                                Password: <span className="text-white font-bold">{crewCreated.pwd}</span><br/>
+                                                Pass these on, then tick them into their jobs.
+                                            </p>
+                                        )}
+                                        <button onClick={() => setCrewCreated(null)} className="text-[11px] text-gray-500 hover:text-white mt-2">Dismiss</button>
+                                    </div>
+                                )}
+
+                                <button onClick={() => setShowUidFallback(!showUidFallback)} className="text-[11px] text-gray-500 hover:text-gray-300 pt-1">
+                                    {showUidFallback ? 'Hide' : 'Already made the account in the Firebase console?'}
+                                </button>
+
+                                {showUidFallback && (
+                                    <div className="space-y-2 pt-1">
+                                        <input type="text" value={newCrewUid} onChange={e => setNewCrewUid(e.target.value)} placeholder="Paste their Firebase User UID" className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm focus:border-blue-400 outline-none" />
+                                        <button onClick={() => {
+                                            const uid = newCrewUid.trim();
+                                            if (!uid) return alert('Paste the User UID from the Firebase console.');
+                                            if (users.some(u => u.id === uid)) return alert('That UID already has access.');
+                                            const rec = { id: uid, role: 'crew', name: newCrewName.trim() || 'Crew', email: newCrewEmail.trim() };
+                                            handleSetUsers([...users, rec], 'upsert', rec);
+                                            setNewCrewUid(''); setNewCrewName(''); setNewCrewEmail('');
+                                        }} className="w-full bg-gray-700 text-white font-bold py-3 rounded-lg flex justify-center items-center gap-2">
+                                            <UserPlus size={18}/> Add by UID
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                     </div>
                 );
             };
@@ -1574,9 +2139,9 @@
             const renderAddPerson = () => {
                 const handleSave = () => {
                     if (!newPersonName || !newPersonRate) return alert('Provide Name and Rate.');
-                    const newPerson = { id: 'usr_' + Date.now().toString(), name: newPersonName, role: newPersonRole, rate: Number(newPersonRate) };
+                    const newPerson = { id: 'usr_' + Date.now().toString(), name: newPersonName, role: newPersonRole, rate: Number(newPersonRate), cashRate: newPersonCashRate === '' ? null : Number(newPersonCashRate) };
                     handleSetPeople([...people, newPerson], 'upsert', newPerson);
-                    setNewPersonName(''); setNewPersonRole('Electrician'); setNewPersonRate('');
+                    setNewPersonName(''); setNewPersonRole('Electrician'); setNewPersonRate(''); setNewPersonCashRate('');
                     setView('main');
                 };
 
@@ -1596,7 +2161,11 @@
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Hourly Rate Cost to Business (€)</label>
-                                <input type="number" value={newPersonRate} onChange={e => setNewPersonRate(e.target.value)} placeholder="e.g. 25" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                <MoneyInput value={newPersonRate} onChange={v => setNewPersonRate(v)} placeholder="e.g. 25" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Default Cash Rate (€/hr) <span className="font-normal text-gray-500">- optional</span></label>
+                                <MoneyInput value={newPersonCashRate} onChange={v => setNewPersonCashRate(v)} placeholder="used to pre-fill cash jobs" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
                             </div>
                             <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
                                 <Save size={20} /> Save Person
@@ -1612,7 +2181,7 @@
 
                 const handleSave = () => {
                     if (!editPersonName || editPersonRate === '' || editPersonRate === null) return alert('Provide Name and Rate.');
-                    const updatedPerson = { ...editingPerson, name: editPersonName, role: editPersonRole, rate: Number(editPersonRate) };
+                    const updatedPerson = { ...editingPerson, name: editPersonName, role: editPersonRole, rate: Number(editPersonRate), cashRate: editPersonCashRate === '' ? null : Number(editPersonCashRate) };
                     const updatedPeople = people.map(p => p.id === editingPerson.id ? updatedPerson : p);
                     handleSetPeople(updatedPeople, 'upsert', updatedPerson);
                     setEditingPerson(null);
@@ -1648,8 +2217,12 @@
                             </div>
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Hourly Rate Cost to Business (€)</label>
-                                <input type="number" value={editPersonRate} onChange={e => setEditPersonRate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
-                                <p className="text-xs text-gray-500 mt-2">Changing the rate updates the labour cost on every job this person has logged time against, past and present.</p>
+                                <MoneyInput value={editPersonRate} onChange={v => setEditPersonRate(v)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                <p className="text-xs text-gray-500 mt-2">Changing the rate updates the labour cost on every job this person has logged time against, past and present - except cash jobs where a cash rate has been agreed.</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Default Cash Rate (€/hr) <span className="font-normal text-gray-500">- optional</span></label>
+                                <MoneyInput value={editPersonCashRate} onChange={v => setEditPersonCashRate(v)} placeholder="used to pre-fill cash jobs" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
                             </div>
 
                             <div className="pt-4 space-y-3">
@@ -1717,6 +2290,62 @@
                                 <p className="text-sm text-green-400 flex items-center gap-2"><Download size={18}/> App is installed.</p>
                             </div>
                         )}
+
+                        {/* One-off data migration */}
+                        {user && (() => {
+                            const needFinance = projects.filter(p => p.quote !== undefined || p.payMode !== undefined);
+                            const needCrew = projects.filter(p => !Array.isArray(p.crew));
+                            const needItems = shoppingItems.filter(n => n.cost !== undefined);
+                            const meOwner = users.find(u => u.id === (user.uid || ''));
+                            const todo = needFinance.length + needCrew.length + needItems.length;
+
+                            const runMigration = async () => {
+                                if (!window.confirm('Move quotes and cash flags into their own owner-only records? Run this once, before publishing the new rules.')) return;
+                                setMigrating('Working...');
+                                try {
+                                    for (const p of needFinance) {
+                                        const finRec = { id: p.id, quote: Number(p.quote || 0), payMode: p.payMode || 'standard' };
+                                        await pushOp('upsert', 'projectFinance', finRec);
+                                    }
+                                    for (const p of projects) {
+                                        const stripped = { ...p, crew: Array.isArray(p.crew) ? p.crew : [] };
+                                        delete stripped.quote;
+                                        delete stripped.payMode;
+                                        await pushOp('upsert', 'projects', stripped);
+                                    }
+                                    for (const n of needItems) {
+                                        const cleaned = { ...n };
+                                        delete cleaned.cost;
+                                        await pushOp('upsert', 'shoppingItems', cleaned);
+                                    }
+                                    setMigrating('Done. ' + needFinance.length + ' jobs moved.');
+                                } catch (e) {
+                                    setMigrating('Failed: ' + (e.message || e));
+                                }
+                            };
+
+                            return (
+                                <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 space-y-3 shadow-lg">
+                                    <h3 className="font-bold text-white flex items-center gap-2"><RefreshCw size={18} className="text-blue-400"/> Crew Access Setup</h3>
+                                    <p className="text-sm text-gray-400 leading-relaxed">
+                                        Splits the money off the job records so a crew login can read a job without seeing its quote. Safe to run more than once.
+                                    </p>
+                                    <p className="text-xs text-gray-500">
+                                        {todo === 0 ? 'Nothing left to move - your data is already split.' : todo + ' record(s) still to move.'}
+                                    </p>
+                                    <button onClick={runMigration} className="w-full bg-blue-500 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2">
+                                        <RefreshCw size={18}/> Run Migration
+                                    </button>
+                                    {migrating && <p className="text-xs text-blue-400">{migrating}</p>}
+                                    {user.uid && (
+                                        <p className="text-[11px] text-gray-500 break-all">
+                                            Your own UID: <span className="text-gray-300">{user.uid}</span>
+                                            {meOwner ? ' · owner record found' : ' · no owner record yet (create users/' + user.uid + " with role 'owner' in the Firebase console before publishing the new rules)"}
+                                        </p>
+                                    )}
+                                </div>
+                            );
+                        })()}
 
                         {/* Account */}
                         {user && (
@@ -1802,7 +2431,10 @@
                         const hrs = timeLogs
                             .filter(t => t.personId === person.id && scopedIds.has(t.projectId))
                             .reduce((s, t) => s + Number(t.hours), 0);
-                        return { id: person.id, name: person.name, role: person.role, hrs, cost: hrs * (person.rate || 0) };
+                        const cost = timeLogs
+                            .filter(t => t.personId === person.id && scopedIds.has(t.projectId))
+                            .reduce((s, t) => s + Number(t.hours) * effectiveRate(projects.find(p => p.id === t.projectId), person.id), 0);
+                        return { id: person.id, name: person.name, role: person.role, hrs, cost };
                     })
                     .filter(p => p.hrs > 0)
                     .sort((a, b) => b.hrs - a.hrs);
@@ -1820,6 +2452,26 @@
                     })
                     .sort((a, b) => b.days - a.days);
                 const maxDays = Math.max(1, ...runningJobs.map(j => j.days));
+
+                // Cash owed per lad, across every cash job in this view. Earned is
+                // hours x the agreed cash rate; paid is what has actually been handed
+                // over. The difference is what is still owed.
+                const cashProjects = scopedProjects.filter(p => isCashJob(p));
+                const cashProjectIds = new Set(cashProjects.map(p => p.id));
+                const cashByPerson = people
+                    .map(person => {
+                        let earned = 0, hrs = 0;
+                        timeLogs.filter(t => cashProjectIds.has(t.projectId) && t.personId === person.id).forEach(t => {
+                            const proj = projects.find(p => p.id === t.projectId);
+                            hrs += Number(t.hours);
+                            earned += Number(t.hours) * effectiveRate(proj, person.id);
+                        });
+                        const paid = cashOut.filter(c => cashProjectIds.has(c.projectId) && c.personId === person.id).reduce((sum, c) => sum + Number(c.amount), 0);
+                        return { id: person.id, name: person.name, hrs, earned, paid, owed: earned - paid };
+                    })
+                    .filter(r => r.earned > 0 || r.paid > 0)
+                    .sort((a, b) => b.owed - a.owed);
+                const cashOwedTotal = cashByPerson.reduce((sum, r) => sum + r.owed, 0);
 
                 // Donut geometry for labour vs materials
                 const R = 42, C = 2 * Math.PI * R;
@@ -1879,6 +2531,44 @@
                         </div>
 
                         {/* Potential profit & margin by job */}
+                        {cashProjects.length > 0 && (
+                            <Section icon={<Banknote size={14}/>} title={'Cash Out by Contractor (' + cashProjects.length + (cashProjects.length === 1 ? ' cash job)' : ' cash jobs)')}>
+                                {cashByPerson.length === 0 ? (
+                                    <p className="text-gray-500 text-sm text-center py-4">No hours or cash on the cash jobs in this view.</p>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {cashByPerson.map(r => (
+                                            <div key={r.id} className="bg-gray-900/50 border border-gray-700 rounded-lg p-3">
+                                                <div className="flex justify-between items-baseline mb-2">
+                                                    <span className="text-sm font-bold text-white">{r.name}</span>
+                                                    <span className="text-[11px] text-gray-500">{r.hrs} hrs</span>
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-2 text-center">
+                                                    <div>
+                                                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Earned</p>
+                                                        <p className="text-sm font-bold text-white">{formatCurrency(r.earned)}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Paid</p>
+                                                        <p className="text-sm font-bold text-emerald-400">{formatCurrency(r.paid)}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] text-gray-500 uppercase tracking-wider">Owed</p>
+                                                        <p className={`text-sm font-bold ${r.owed > 0.005 ? 'text-orange-400' : r.owed < -0.005 ? 'text-red-400' : 'text-gray-500'}`}>{formatCurrency(r.owed)}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        <div className="flex justify-between items-center border-t border-gray-700 pt-3">
+                                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Total still owed</span>
+                                            <span className={`font-bold ${cashOwedTotal > 0.005 ? 'text-orange-400' : 'text-gray-500'}`}>{formatCurrency(cashOwedTotal)}</span>
+                                        </div>
+                                        <p className="text-[11px] text-gray-500">Internal only. Cash jobs are left out of the accountant export unless you switch them on.</p>
+                                    </div>
+                                )}
+                            </Section>
+                        )}
+
                         <Section icon={<TrendingUp size={14}/>} title="Potential Profit & Margin by Job">
                             {profitJobs.length === 0 ? (
                                 <p className="text-gray-500 text-sm text-center py-4">No jobs with figures yet.</p>
@@ -1991,6 +2681,109 @@
                                 </div>
                             )}
                         </Section>
+                    </div>
+                );
+            };
+
+            // --- VIEW: RECORD CASH PAID ---
+            const renderAddCash = () => {
+                if (!activeProject) return null;
+                const personId = cashPersonId || (people[0]?.id || '');
+
+                const handleSave = () => {
+                    if (!personId || !cashAmount) return alert('Pick a person and enter an amount.');
+                    const rec = { id: newId('cash'), projectId: activeProject.id, personId, amount: Number(cashAmount), date: new Date(cashDate).toISOString(), note: cashNote.trim() };
+                    handleSetCashOut([rec, ...cashOut], 'upsert', rec);
+                    setCashAmount(''); setCashNote(''); setCashDate(new Date().toISOString().split('T')[0]);
+                    setView('project-detail');
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => setView('project-detail')} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-white mb-1">Record Cash Paid</h2>
+                        <p className="text-emerald-400 text-sm font-bold mb-6">{activeProject.name}</p>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Paid To</label>
+                                <select value={personId} onChange={e => setCashPersonId(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none appearance-none">
+                                    {people.map(p => <option key={p.id} value={p.id} className="bg-gray-800">{p.name}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Amount (€)</label>
+                                <MoneyInput value={cashAmount} onChange={v => setCashAmount(v)} placeholder="e.g. 400" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Date</label>
+                                <input type="date" value={cashDate} onChange={e => setCashDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Note <span className="font-normal text-gray-500">- optional</span></label>
+                                <input type="text" value={cashNote} onChange={e => setCashNote(e.target.value)} placeholder="e.g. week 3" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
+                            </div>
+                            <button onClick={handleSave} className="w-full bg-emerald-500 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
+                                <Save size={20} /> Save Cash Payment
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- VIEW: EDIT CASH PAID ---
+            const renderEditCash = () => {
+                if (!editingCashOut) return null;
+
+                const handleSave = () => {
+                    if (!editCashPersonId || editCashAmount === '') return alert('Pick a person and enter an amount.');
+                    const rec = { ...editingCashOut, personId: editCashPersonId, amount: Number(editCashAmount), date: new Date(editCashDate).toISOString(), note: editCashNote.trim() };
+                    handleSetCashOut(cashOut.map(c => c.id === editingCashOut.id ? rec : c), 'upsert', rec);
+                    setEditingCashOut(null);
+                    setView('project-detail');
+                };
+
+                const handleDelete = () => {
+                    if (!window.confirm('Delete this cash payment?')) return;
+                    handleSetCashOut(cashOut.filter(c => c.id !== editingCashOut.id), 'delete', editingCashOut);
+                    setEditingCashOut(null);
+                    setView('project-detail');
+                };
+
+                return (
+                    <div className="p-5 pt-10 min-h-screen bg-gray-900 z-50">
+                        <button onClick={() => { setEditingCashOut(null); setView('project-detail'); }} className="text-gray-400 mb-6 flex items-center gap-2"><ArrowLeft size={20}/> Cancel</button>
+                        <h2 className="text-2xl font-bold text-white mb-6">Edit Cash Payment</h2>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Paid To</label>
+                                <select value={editCashPersonId} onChange={e => setEditCashPersonId(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none appearance-none">
+                                    {people.map(p => <option key={p.id} value={p.id} className="bg-gray-800">{p.name}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Amount (€)</label>
+                                <MoneyInput value={editCashAmount} onChange={v => setEditCashAmount(v)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Date</label>
+                                <input type="date" value={editCashDate} onChange={e => setEditCashDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 mb-1">Note <span className="font-normal text-gray-500">- optional</span></label>
+                                <input type="text" value={editCashNote} onChange={e => setEditCashNote(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-400 outline-none" />
+                            </div>
+
+                            <div className="pt-4 space-y-3">
+                                <button onClick={handleSave} className="w-full bg-emerald-500 text-gray-900 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Save size={20} /> Save Changes
+                                </button>
+                                <button onClick={handleDelete} className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-4 rounded-xl flex justify-center items-center gap-2">
+                                    <Trash2 size={20} /> Delete Payment
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 );
             };
@@ -2213,7 +3006,7 @@
                             )}
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Amount (€)</label>
-                                <input type="number" step="0.01" value={payAmount} onChange={e => setPayAmount(e.target.value)} placeholder="e.g. 2500" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                <MoneyInput value={payAmount} onChange={v => setPayAmount(v)} placeholder="e.g. 2500" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
                             </div>
                             <button onClick={handleSave} className="w-full bg-yellow-400 text-gray-900 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2">
                                 <Save size={20} /> Save Payment
@@ -2266,7 +3059,7 @@
                             )}
                             <div>
                                 <label className="block text-sm font-bold text-gray-400 mb-1">Amount (€)</label>
-                                <input type="number" step="0.01" value={editPayAmount} onChange={e => setEditPayAmount(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
+                                <MoneyInput value={editPayAmount} onChange={v => setEditPayAmount(v)} className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-yellow-400 outline-none" />
                             </div>
 
                             <div className="pt-4 space-y-3">
@@ -2308,7 +3101,31 @@
                     return renderLogin();
                 }
 
-                if (loading && user && activeTab !== 'settings') return <div className="h-screen flex flex-col items-center justify-center text-yellow-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Loading Data...</p></div>;
+                if (user && officeRole === 'crew') {
+                    return (
+                        <div className="h-screen flex flex-col items-center justify-center p-6 text-center">
+                            <Users className="text-blue-400 mb-4" size={44}/>
+                            <h2 className="text-lg font-bold text-white mb-2">This is the office app</h2>
+                            <p className="text-gray-400 text-sm mb-6 max-w-xs">Your login is for the crew app, which shows the works and materials for your jobs.</p>
+                            <a href="crew.html" className="bg-blue-500 text-white font-bold py-3 px-6 rounded-xl mb-4">Open the crew app</a>
+                            <button onClick={() => { if (auth) signOut(auth); }} className="text-sm text-gray-500 hover:text-white">Sign out</button>
+                        </div>
+                    );
+                }
+
+                if (user && accessDenied && activeTab !== 'settings') {
+                    return (
+                        <div className="h-screen flex flex-col items-center justify-center p-6 text-center">
+                            <Cloud className="text-red-500 mb-4" size={44}/>
+                            <h2 className="text-lg font-bold text-white mb-2">No access</h2>
+                            <p className="text-gray-400 text-sm mb-2 max-w-xs">This login is not set up as an owner.</p>
+                            <p className="text-gray-500 text-xs mb-6 max-w-xs break-all">If this is you setting up: add a document at users/{user.uid} with role = owner in the Firebase console, then reload.</p>
+                            <button onClick={() => { if (auth) signOut(auth); }} className="text-sm text-gray-500 hover:text-white">Sign out</button>
+                        </div>
+                    );
+                }
+
+                if ((officeRole === 'checking' || loading) && user && activeTab !== 'settings') return <div className="h-screen flex flex-col items-center justify-center text-yellow-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Loading Data...</p></div>;
                 
                 if (view === 'add-project') return renderAddProject();
                 if (view === 'edit-project') return renderEditProject();
@@ -2320,6 +3137,8 @@
                 if (view === 'add-material') return renderAddMaterial();
                 if (view === 'edit-material') return renderEditMaterial();
                 if (view === 'roster-job') return renderRosterJob();
+                if (view === 'add-cash') return renderAddCash();
+                if (view === 'edit-cash') return renderEditCash();
                 if (view === 'add-payment') return renderAddPayment();
                 if (view === 'edit-payment') return renderEditPayment();
                 
@@ -2335,7 +3154,7 @@
             };
 
             const onLoginScreen = authReady && !user && activeTab !== 'settings';
-            const showNav = view === 'main' && !onLoginScreen;
+            const showNav = view === 'main' && !onLoginScreen && !(user && (officeRole === 'crew' || accessDenied));
 
             return (
                 <div className="bg-gray-900 min-h-screen max-w-md mx-auto relative shadow-2xl border-x border-gray-800">

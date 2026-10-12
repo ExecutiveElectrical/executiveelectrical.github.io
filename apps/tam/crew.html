@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TITS Crew | Works &amp; Materials</title>
+
+    <!-- PWA / install support -->
+    <meta name="theme-color" content="#111827">
+    <link rel="manifest" href="crew-manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="TITS Crew">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2360a5fa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 11l3 3L22 4'/%3E%3Cpath d='M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11'/%3E%3C/svg%3E">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime"
+        }
+    }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #111827; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #111827; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
+    </style>
+</head>
+<body class="text-gray-100">
+    <div id="root"></div>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('crew-sw.js').catch(() => {});
+            });
+        }
+    </script>
+
+    <script type="text/babel" data-type="module">
+        /*********************************************************************
+         * TITS CREW APP
+         * -------------------------------------------------------------------
+         * A deliberately small, separate app for staff and subcontractors.
+         *
+         * It reads FOUR things and nothing else:
+         *   users/{myUid}   - to learn my name and confirm I am crew
+         *   projects        - only jobs whose crew array contains my uid
+         *   tasks           - outstanding works on those jobs
+         *   shoppingItems   - materials needed on those jobs
+         *
+         * There is no code in this file that reads a quote, a rate, a material
+         * cost, a payment or anything to do with cash - and the Firestore rules
+         * deny those collections to a crew account anyway, so a modified copy of
+         * this page would get nothing either. The security is in the rules; this
+         * file just has no reason to ask.
+         *********************************************************************/
+        import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import {
+            ClipboardList, ShoppingCart, CheckCircle2, Circle, Check, X, Plus, Trash2,
+            ArrowLeft, RefreshCw, Briefcase, LogOut, Download, Cloud
+        } from 'https://esm.sh/lucide-react@0.294.0';
+
+        import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+        import { getFirestore, collection, query, where, onSnapshot, doc, getDoc, setDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence, sendPasswordResetEmail } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+
+        // Same Firebase project as the office app. This config is public by
+        // design - what an account may read is decided by the rules.
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDigyvF9L_BvPZh7BsAPcVjRR0gaIsb6ZI",
+            authDomain: "timinvtrasys.firebaseapp.com",
+            projectId: "timinvtrasys",
+            storageBucket: "timinvtrasys.firebasestorage.app",
+            messagingSenderId: "91354575877",
+            appId: "1:91354575877:web:2a230353d38d54279c186c"
+        };
+
+        function App() {
+            const [db, setDb] = useState(null);
+            const [auth, setAuth] = useState(null);
+            const [user, setUser] = useState(null);
+            const [authReady, setAuthReady] = useState(false);
+            const [initError, setInitError] = useState('');
+
+            const [me, setMe] = useState(null);          // users/{uid}
+            const [meChecked, setMeChecked] = useState(false);
+            const [projects, setProjects] = useState([]);
+            const [tasks, setTasks] = useState([]);
+            const [shoppingItems, setShoppingItems] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [saving, setSaving] = useState(false);
+
+            const [activeProject, setActiveProject] = useState(null);
+            const [newTaskText, setNewTaskText] = useState('');
+            const [newNeedItem, setNewNeedItem] = useState('');
+            const [newNeedQty, setNewNeedQty] = useState('');
+            const [showDone, setShowDone] = useState(false);
+            const [showBought, setShowBought] = useState(false);
+
+            const [loginEmail, setLoginEmail] = useState('');
+            const [loginPwd, setLoginPwd] = useState('');
+            const [loginError, setLoginError] = useState('');
+            const [loggingIn, setLoggingIn] = useState(false);
+            const [resetNote, setResetNote] = useState('');
+
+            // Install (PWA)
+            const [deferredPrompt, setDeferredPrompt] = useState(null);
+            const [isStandalone, setIsStandalone] = useState(false);
+            const [isIos, setIsIos] = useState(false);
+            const [dismissed, setDismissed] = useState(false);
+            const [showIosHelp, setShowIosHelp] = useState(false);
+
+            useEffect(() => {
+                try {
+                    const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
+                    const a = getAuth(app);
+                    setPersistence(a, browserLocalPersistence).catch(() => {});
+                    setDb(getFirestore(app));
+                    setAuth(a);
+                    const unsub = onAuthStateChanged(a, (u) => { setUser(u); setAuthReady(true); if (!u) { setMe(null); setMeChecked(false); setLoading(false); } });
+                    return () => unsub();
+                } catch (e) {
+                    setInitError(e.message || 'Could not start.');
+                    setLoading(false);
+                }
+            }, []);
+
+            useEffect(() => {
+                const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+                setIsStandalone(standalone);
+                setIsIos(/iphone|ipad|ipod/i.test(window.navigator.userAgent) && !window.MSStream);
+                const onBeforeInstall = (e) => { e.preventDefault(); setDeferredPrompt(e); };
+                const onInstalled = () => { setDeferredPrompt(null); setIsStandalone(true); };
+                window.addEventListener('beforeinstallprompt', onBeforeInstall);
+                window.addEventListener('appinstalled', onInstalled);
+                return () => {
+                    window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+                    window.removeEventListener('appinstalled', onInstalled);
+                };
+            }, []);
+
+            const runInstall = async () => {
+                if (isIos) { setShowIosHelp(true); return; }
+                if (!deferredPrompt) return;
+                deferredPrompt.prompt();
+                try { await deferredPrompt.userChoice; } catch (e) {}
+                setDeferredPrompt(null);
+            };
+            const canInstall = !isStandalone && (deferredPrompt || isIos);
+
+            // Who am I? One document read, and the only thing that decides access.
+            useEffect(() => {
+                if (!db || !user) return;
+                let cancelled = false;
+                (async () => {
+                    try {
+                        const snap = await getDoc(doc(db, 'users', user.uid));
+                        if (!cancelled) { setMe(snap.exists() ? snap.data() : null); setMeChecked(true); }
+                    } catch (e) {
+                        if (!cancelled) { setMe(null); setMeChecked(true); }
+                    }
+                })();
+                return () => { cancelled = true; };
+            }, [db, user]);
+
+            // Only the jobs I have been put on.
+            useEffect(() => {
+                if (!db || !user || !me) return;
+                setLoading(true);
+                const q = query(collection(db, 'projects'), where('crew', 'array-contains', user.uid));
+                const unsub = onSnapshot(q,
+                    (snap) => { setProjects(snap.docs.map(d => d.data())); setLoading(false); },
+                    (err) => { console.error('projects:', err.code); setLoading(false); }
+                );
+                return () => unsub();
+            }, [db, user, me]);
+
+            // Works and materials for those jobs. Firestore's "in" takes 30 values,
+            // which is far more jobs than anyone is on at once.
+            const myJobIds = projects.map(p => p.id);
+            const jobKey = myJobIds.join(',');
+            useEffect(() => {
+                if (!db || !user || myJobIds.length === 0) { setTasks([]); setShoppingItems([]); return; }
+                const ids = myJobIds.slice(0, 30);
+                const subs = [
+                    onSnapshot(query(collection(db, 'tasks'), where('projectId', 'in', ids)),
+                        (snap) => setTasks(snap.docs.map(d => d.data())),
+                        (err) => console.error('tasks:', err.code)),
+                    onSnapshot(query(collection(db, 'shoppingItems'), where('projectId', 'in', ids)),
+                        (snap) => setShoppingItems(snap.docs.map(d => d.data())),
+                        (err) => console.error('shoppingItems:', err.code))
+                ];
+                return () => subs.forEach(u => u());
+            }, [db, user, jobKey]);
+
+            const push = async (action, type, record) => {
+                if (!db || !record || !record.id) return;
+                setSaving(true);
+                try {
+                    if (action === 'delete') await deleteDoc(doc(db, type, record.id));
+                    else {
+                        // Never carry a money field back up - the rules would refuse the save.
+                        const clean = { ...record };
+                        ['quote', 'payMode', 'cost', 'price', 'rate', 'cashRate', 'amount'].forEach(k => delete clean[k]);
+                        await setDoc(doc(db, type, record.id), clean);
+                    }
+                } catch (err) {
+                    alert('Could not save: ' + (err.message || err));
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            const myName = () => (me && me.name) ? me.name : (user && user.email ? user.email.split('@')[0] : '');
+            const newId = (prefix) => prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+            const needLabel = (n) => (n.qty ? n.item + ' (x' + n.qty + ')' : n.item);
+            const openTasksFor = (id) => tasks.filter(t => t.projectId === id && !t.done).length;
+            const openNeedsFor = (id) => shoppingItems.filter(n => n.projectId === id && !n.purchased).length;
+
+            const doLogin = async () => {
+                setLoginError('');
+                if (!loginEmail || !loginPwd) { setLoginError('Enter your email and password.'); return; }
+                setLoggingIn(true);
+                try {
+                    await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPwd);
+                } catch (e) {
+                    setLoginError('Sign-in failed. Check your email and password.');
+                } finally {
+                    setLoggingIn(false);
+                }
+            };
+
+            const Header = ({ title, subtitle, onBack }) => (
+                <header className="bg-gray-800 border-b border-gray-700 p-4 sticky top-0 z-10 flex items-center justify-between">
+                    <div className="flex items-center gap-3 min-w-0">
+                        {onBack && <button onClick={onBack} className="p-2 -ml-2 text-gray-400 hover:text-white shrink-0"><ArrowLeft size={24}/></button>}
+                        <div className="min-w-0">
+                            <h1 className="text-lg font-bold text-white leading-tight truncate">{title}</h1>
+                            {subtitle && <p className="text-xs text-blue-400 truncate">{subtitle}</p>}
+                        </div>
+                    </div>
+                    {saving && <RefreshCw size={16} className="animate-spin text-blue-400 shrink-0"/>}
+                </header>
+            );
+
+            // ---------------- LOGIN ----------------
+            if (initError) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                        <Cloud className="text-red-500 mb-4" size={48}/>
+                        <h2 className="text-lg font-bold text-white mb-2">Could not connect</h2>
+                        <p className="text-gray-400 text-sm">{initError}</p>
+                    </div>
+                );
+            }
+
+            if (!authReady) {
+                return <div className="min-h-screen flex flex-col items-center justify-center text-blue-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Connecting...</p></div>;
+            }
+
+            if (!user) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                        <ClipboardList className="text-blue-400 mb-3" size={40}/>
+                        <h1 className="text-2xl font-black text-white mb-1"><span className="text-blue-400">TITS</span> Crew</h1>
+                        <p className="text-gray-500 text-xs mb-8">Works and materials for your jobs</p>
+                        <div className="w-full max-w-xs space-y-3">
+                            <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-blue-400 outline-none"/>
+                            <input type="password" value={loginPwd} onChange={e => setLoginPwd(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doLogin(); }} placeholder="Password" className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-blue-400 outline-none"/>
+                            {loginError && <p className="text-sm text-red-400">{loginError}</p>}
+                            {resetNote && <p className="text-sm text-blue-400">{resetNote}</p>}
+                            <button onClick={doLogin} disabled={loggingIn} className="w-full bg-blue-500 text-white font-bold py-4 rounded-xl flex justify-center items-center gap-2 disabled:opacity-50">
+                                {loggingIn ? <><RefreshCw size={18} className="animate-spin"/> Signing in...</> : 'Sign In'}
+                            </button>
+                            <button onClick={async () => {
+                                setLoginError(''); setResetNote('');
+                                const email = loginEmail.trim();
+                                if (!email) { setLoginError('Type your email above first, then tap Forgot password.'); return; }
+                                try {
+                                    await sendPasswordResetEmail(auth, email);
+                                } catch (e) { /* say the same either way, so the screen never confirms which emails have logins */ }
+                                setResetNote('If that email has a login, a link to set a new password is on its way. Check junk too.');
+                            }} className="text-xs text-gray-500 hover:text-gray-300 pt-2">Forgot password?</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            // Signed in but not set up as crew (or set up as an owner, who should
+            // be using the office app instead).
+            if (meChecked && (!me || me.role !== 'crew')) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                        <ClipboardList className="text-gray-600 mb-4" size={40}/>
+                        <h2 className="text-lg font-bold text-white mb-2">No site access yet</h2>
+                        <p className="text-gray-400 text-sm mb-6 max-w-xs">This login has not been given crew access. Ask the office to add you, then sign in again.</p>
+                        <button onClick={() => signOut(auth)} className="text-sm text-gray-500 hover:text-white flex items-center gap-2"><LogOut size={16}/> Sign out</button>
+                    </div>
+                );
+            }
+
+            if (!meChecked || loading) {
+                return <div className="min-h-screen flex flex-col items-center justify-center text-blue-400"><RefreshCw className="animate-spin mb-4" size={32}/><p className="text-sm font-bold text-gray-400">Loading your jobs...</p></div>;
+            }
+
+            // ---------------- JOB LIST ----------------
+            if (!activeProject) {
+                const sorted = [...projects].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                return (
+                    <div className="bg-gray-900 min-h-screen max-w-md mx-auto border-x border-gray-800">
+                        {canInstall && !dismissed && (
+                            <div className="bg-blue-500 text-white px-4 py-2 flex items-center justify-between gap-2 text-sm font-bold">
+                                <span className="flex items-center gap-2"><Download size={16}/> Install on your phone</span>
+                                <span className="flex items-center gap-1">
+                                    <button onClick={runInstall} className="bg-white text-blue-600 px-3 py-1 rounded-lg">Install</button>
+                                    <button onClick={() => setDismissed(true)} className="p-1"><X size={16}/></button>
+                                </span>
+                            </div>
+                        )}
+                        <Header title="My Jobs" subtitle={myName()}/>
+                        <div className="p-4 space-y-3 pb-24">
+                            {sorted.length === 0 && (
+                                <p className="text-center text-gray-500 py-12 bg-gray-800/30 rounded-xl border border-gray-800 text-sm">
+                                    No jobs assigned to you yet.
+                                </p>
+                            )}
+                            {sorted.map(p => (
+                                <div key={p.id} onClick={() => setActiveProject(p)} className="bg-gray-800 p-4 rounded-xl border border-gray-700 active:bg-gray-700 cursor-pointer shadow-sm">
+                                    <h3 className="font-bold text-white text-lg leading-tight">{p.name}</h3>
+                                    {p.client && <p className="text-sm text-gray-400 mb-2">{p.client}</p>}
+                                    <div className="flex flex-wrap gap-2 mt-2">
+                                        {openTasksFor(p.id) > 0 && (
+                                            <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-yellow-400/10 text-yellow-400 flex items-center gap-1">
+                                                <ClipboardList size={11}/> {openTasksFor(p.id)} to do
+                                            </span>
+                                        )}
+                                        {openNeedsFor(p.id) > 0 && (
+                                            <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-purple-400/10 text-purple-400 flex items-center gap-1">
+                                                <ShoppingCart size={11}/> {openNeedsFor(p.id)} to buy
+                                            </span>
+                                        )}
+                                        {openTasksFor(p.id) === 0 && openNeedsFor(p.id) === 0 && (
+                                            <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-700 text-gray-400">Nothing outstanding</span>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+
+                            <button onClick={() => signOut(auth)} className="w-full text-xs text-gray-600 hover:text-gray-300 pt-6 flex items-center justify-center gap-2">
+                                <LogOut size={14}/> Sign out
+                            </button>
+                        </div>
+
+                        {showIosHelp && (
+                            <div className="fixed inset-0 bg-black/80 flex items-end justify-center p-4 z-50" onClick={() => setShowIosHelp(false)}>
+                                <div className="bg-gray-800 border border-gray-700 rounded-2xl w-full max-w-sm p-6 mb-4" onClick={e => e.stopPropagation()}>
+                                    <h3 className="text-lg font-bold text-white mb-3">Add to Home Screen</h3>
+                                    <ol className="text-sm text-gray-300 space-y-2 list-decimal list-inside">
+                                        <li>Tap <span className="text-blue-400 font-bold">Share</span> in Safari.</li>
+                                        <li>Tap <span className="text-blue-400 font-bold">Add to Home Screen</span>.</li>
+                                        <li>Tap <span className="text-blue-400 font-bold">Add</span>.</li>
+                                    </ol>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            }
+
+            // ---------------- ONE JOB ----------------
+            const pid = activeProject.id;
+            const stillAssigned = projects.some(p => p.id === pid);
+            if (!stillAssigned) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+                        <p className="text-gray-400 text-sm mb-4">This job is no longer assigned to you.</p>
+                        <button onClick={() => setActiveProject(null)} className="bg-blue-500 text-white font-bold py-3 px-6 rounded-xl">Back to my jobs</button>
+                    </div>
+                );
+            }
+
+            const pTasks = tasks.filter(t => t.projectId === pid);
+            const openWorks = pTasks.filter(t => !t.done).sort((a, b) => (a.createdAt || '') < (b.createdAt || '') ? -1 : 1);
+            const doneWorks = pTasks.filter(t => t.done).sort((a, b) => (a.doneAt || '') < (b.doneAt || '') ? 1 : -1);
+            const pNeeds = shoppingItems.filter(n => n.projectId === pid);
+            const openNeeds = pNeeds.filter(n => !n.purchased).sort((a, b) => (a.createdAt || '') < (b.createdAt || '') ? -1 : 1);
+            const boughtNeeds = pNeeds.filter(n => n.purchased).sort((a, b) => (a.purchasedAt || '') < (b.purchasedAt || '') ? 1 : -1);
+
+            const addTask = () => {
+                const text = newTaskText.trim();
+                if (!text) return;
+                const rec = { id: newId('task'), projectId: pid, text, done: false, doneAt: '', doneBy: '', createdAt: new Date().toISOString(), createdBy: myName() };
+                setTasks([...tasks, rec]);
+                push('upsert', 'tasks', rec);
+                setNewTaskText('');
+            };
+            const toggleTask = (t) => {
+                const nowDone = !t.done;
+                const rec = { ...t, done: nowDone, doneAt: nowDone ? new Date().toISOString() : '', doneBy: nowDone ? myName() : '' };
+                setTasks(tasks.map(x => x.id === t.id ? rec : x));
+                push('upsert', 'tasks', rec);
+            };
+            const addNeed = () => {
+                const item = newNeedItem.trim();
+                if (!item) return;
+                const rec = { id: newId('need'), projectId: pid, item, qty: newNeedQty.trim(), purchased: false, purchasedAt: '', purchasedBy: '', materialLogId: '', createdAt: new Date().toISOString(), createdBy: myName() };
+                setShoppingItems([...shoppingItems, rec]);
+                push('upsert', 'shoppingItems', rec);
+                setNewNeedItem(''); setNewNeedQty('');
+            };
+            // Crew tick an item as picked up. The price is the office's job - there
+            // is no cost field here at all.
+            const toggleNeed = (n) => {
+                const bought = !n.purchased;
+                const rec = { ...n, purchased: bought, purchasedAt: bought ? new Date().toISOString() : '', purchasedBy: bought ? myName() : '' };
+                setShoppingItems(shoppingItems.map(x => x.id === n.id ? rec : x));
+                push('upsert', 'shoppingItems', rec);
+            };
+            const removeTask = (t) => {
+                if (!window.confirm('Remove "' + t.text + '" from the list?')) return;
+                setTasks(tasks.filter(x => x.id !== t.id));
+                push('delete', 'tasks', t);
+            };
+            const removeNeed = (n) => {
+                if (!window.confirm('Remove "' + n.item + '" from the list?')) return;
+                setShoppingItems(shoppingItems.filter(x => x.id !== n.id));
+                push('delete', 'shoppingItems', n);
+            };
+
+            return (
+                <div className="bg-gray-900 min-h-screen max-w-md mx-auto border-x border-gray-800">
+                    <Header title={activeProject.name} subtitle={activeProject.client || ''} onBack={() => setActiveProject(null)}/>
+
+                    <div className="p-4 space-y-6 pb-24">
+                        {/* Outstanding works */}
+                        <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 shadow-lg">
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="font-bold text-white flex items-center gap-2"><ClipboardList size={16} className="text-yellow-400"/> Outstanding Works</h3>
+                                <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${openWorks.length > 0 ? 'bg-yellow-400 text-gray-900' : 'bg-gray-700 text-gray-400'}`}>{openWorks.length}</span>
+                            </div>
+
+                            <div className="flex gap-2 mb-3">
+                                <input type="text" value={newTaskText} onChange={e => setNewTaskText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addTask(); }} placeholder="Add something that needs doing" className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm focus:border-yellow-400 outline-none"/>
+                                <button onClick={addTask} className="bg-yellow-400 text-gray-900 px-4 rounded-lg font-bold flex items-center"><Plus size={18}/></button>
+                            </div>
+
+                            <div className="space-y-2">
+                                {openWorks.length === 0 && <p className="text-gray-500 text-sm py-2 text-center">Nothing outstanding.</p>}
+                                {openWorks.map(t => (
+                                    <div key={t.id} className="flex items-center gap-3 bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                        <button onClick={() => toggleTask(t)} className="text-gray-500 shrink-0"><Circle size={22}/></button>
+                                        <p className="flex-1 text-sm text-white leading-snug">{t.text}</p>
+                                        <button onClick={() => removeTask(t)} className="text-gray-600 shrink-0"><Trash2 size={16}/></button>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {doneWorks.length > 0 && (
+                                <button onClick={() => setShowDone(!showDone)} className="text-xs font-bold text-gray-400 mt-3 flex items-center gap-1">
+                                    <CheckCircle2 size={13} className="text-green-500"/> {showDone ? 'Hide' : 'Show'} {doneWorks.length} done
+                                </button>
+                            )}
+                            {showDone && (
+                                <div className="space-y-2 mt-2">
+                                    {doneWorks.map(t => (
+                                        <div key={t.id} className="flex items-center gap-3 bg-gray-900/30 border border-gray-800 rounded-lg p-3">
+                                            <button onClick={() => toggleTask(t)} className="text-green-500 shrink-0"><CheckCircle2 size={22}/></button>
+                                            <div className="flex-1">
+                                                <p className="text-sm text-gray-500 line-through leading-snug">{t.text}</p>
+                                                {t.doneAt && <p className="text-[11px] text-gray-600">{new Date(t.doneAt).toLocaleDateString('en-GB')}{t.doneBy ? ' · ' + t.doneBy : ''}</p>}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Materials needed */}
+                        <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 shadow-lg">
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="font-bold text-white flex items-center gap-2"><ShoppingCart size={16} className="text-purple-400"/> Materials Needed</h3>
+                                <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${openNeeds.length > 0 ? 'bg-purple-400 text-gray-900' : 'bg-gray-700 text-gray-400'}`}>{openNeeds.length}</span>
+                            </div>
+
+                            <div className="flex gap-2 mb-3">
+                                <input type="text" value={newNeedItem} onChange={e => setNewNeedItem(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addNeed(); }} placeholder="What is needed" className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm focus:border-purple-400 outline-none"/>
+                                <input type="text" value={newNeedQty} onChange={e => setNewNeedQty(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addNeed(); }} placeholder="Qty" className="w-20 bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm focus:border-purple-400 outline-none"/>
+                                <button onClick={addNeed} className="bg-purple-400 text-gray-900 px-4 rounded-lg font-bold flex items-center"><Plus size={18}/></button>
+                            </div>
+
+                            <div className="space-y-2">
+                                {openNeeds.length === 0 && <p className="text-gray-500 text-sm py-2 text-center">Nothing to pick up.</p>}
+                                {openNeeds.map(n => (
+                                    <div key={n.id} className="flex items-center gap-3 bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                        <button onClick={() => toggleNeed(n)} className="text-gray-500 shrink-0" title="Mark as picked up"><Circle size={22}/></button>
+                                        <p className="flex-1 text-sm text-white leading-snug">
+                                            {n.item}{n.qty ? <span className="text-purple-400 font-bold"> × {n.qty}</span> : null}
+                                        </p>
+                                        <button onClick={() => removeNeed(n)} className="text-gray-600 shrink-0"><Trash2 size={16}/></button>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {boughtNeeds.length > 0 && (
+                                <button onClick={() => setShowBought(!showBought)} className="text-xs font-bold text-gray-400 mt-3 flex items-center gap-1">
+                                    <CheckCircle2 size={13} className="text-green-500"/> {showBought ? 'Hide' : 'Show'} {boughtNeeds.length} picked up
+                                </button>
+                            )}
+                            {showBought && (
+                                <div className="space-y-2 mt-2">
+                                    {boughtNeeds.map(n => (
+                                        <div key={n.id} className="flex items-center gap-3 bg-gray-900/30 border border-gray-800 rounded-lg p-3">
+                                            <button onClick={() => toggleNeed(n)} className="text-green-500 shrink-0"><CheckCircle2 size={22}/></button>
+                                            <div className="flex-1">
+                                                <p className="text-sm text-gray-500 line-through leading-snug">{needLabel(n)}</p>
+                                                <p className="text-[11px] text-gray-600">
+                                                    {n.purchasedAt ? new Date(n.purchasedAt).toLocaleDateString('en-GB') : ''}{n.purchasedBy ? ' · ' + n.purchasedBy : ''}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <p className="text-[11px] text-gray-600 mt-3">Keep your docket - the office puts the price on.</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
