@@ -1678,7 +1678,7 @@
                                                 <div className="bg-orange-500/20 p-2 rounded-full"><Clock size={16} className="text-orange-400"/></div>
                                                 <div>
                                                     <p className="font-bold text-white text-sm">{person?.name || 'Unknown User'}</p>
-                                                    <p className="text-xs text-gray-400">{new Date(log.date).toLocaleDateString('en-GB')} • {log.notes}</p>
+                                                    <p className="text-xs text-gray-400">{new Date(log.date).toLocaleDateString('en-GB')}{log.notes ? ' • ' + log.notes : ''}{log.loggedByUid ? ' • crew app' : ''}</p>
                                                 </div>
                                             </div>
                                             <div className="text-right flex items-center gap-3">
@@ -1698,7 +1698,7 @@
                                             <div className="bg-purple-500/20 p-2 rounded-full"><Wrench size={16} className="text-purple-400"/></div>
                                             <div>
                                                 <p className="font-bold text-white text-sm truncate max-w-[150px]">{log.item}</p>
-                                                <p className="text-xs text-gray-400">{new Date(log.date).toLocaleDateString('en-GB')}</p>
+                                                <p className="text-xs text-gray-400">{new Date(log.date).toLocaleDateString('en-GB')}{log.loggedBy ? ' • from ' + log.loggedBy : ''}</p>
                                             </div>
                                         </div>
                                         <div className="text-right flex items-center gap-3">
@@ -2037,7 +2037,7 @@
                         <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 shadow-lg mt-8">
                             <h3 className="font-bold text-white flex items-center gap-2 mb-1"><Users size={16} className="text-blue-400"/> Crew App Logins</h3>
                             <p className="text-[11px] text-gray-500 mb-4 leading-relaxed">
-                                Accounts that can open the crew app. They see only the jobs you tick them into, and only the works and materials lists - no quotes, rates, costs or payments.
+                                Accounts that can open the crew app. On the jobs you tick them into they see the works and materials lists and their own hours, and can send in their hours and docket costs. They never see quotes, rates, costs or payments - not even the dockets they sent.
                             </p>
 
                             <div className="space-y-2 mb-3">
@@ -2045,7 +2045,8 @@
                                 {users.filter(u => u.role === 'crew').map(u => {
                                     const jobCount = projects.filter(p => (p.crew || []).includes(u.id)).length;
                                     return (
-                                        <div key={u.id} className="flex justify-between items-center bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                        <div key={u.id} className="bg-gray-900/60 border border-gray-700 rounded-lg p-3 space-y-2">
+                                        <div className="flex justify-between items-center">
                                             <div className="min-w-0">
                                                 <p className="text-sm font-bold text-white truncate">{u.name || 'Unnamed'}</p>
                                                 <p className="text-[10px] text-gray-500 truncate">{jobCount} {jobCount === 1 ? 'job' : 'jobs'} · {u.email || u.id}</p>
@@ -2067,6 +2068,21 @@
                                                     handleSetUsers(users.filter(x => x.id !== u.id), 'delete', u);
                                                 }} className="text-gray-600 hover:text-red-400 p-1"><Trash2 size={16}/></button>
                                             </span>
+                                        </div>
+                                        <label className="flex items-center gap-2 text-[11px] text-gray-400">
+                                            <span className="shrink-0">Hours go to</span>
+                                            <select
+                                                value={u.personId || ''}
+                                                onChange={e => {
+                                                    const rec = { ...u, personId: e.target.value };
+                                                    handleSetUsers(users.map(x => x.id === u.id ? rec : x), 'upsert', rec);
+                                                }}
+                                                className={`flex-1 min-w-0 bg-gray-800 border rounded-lg px-2 py-1.5 text-xs outline-none ${u.personId ? 'border-gray-700 text-white' : 'border-orange-400/60 text-orange-300'}`}
+                                            >
+                                                <option value="" className="bg-gray-800">Not linked - cannot log hours</option>
+                                                {people.map(p => <option key={p.id} value={p.id} className="bg-gray-800">{p.name}{p.role ? ' (' + p.role + ')' : ''}</option>)}
+                                            </select>
+                                        </label>
                                         </div>
                                     );
                                 })}

@@ -53,23 +53,24 @@
          * -------------------------------------------------------------------
          * A deliberately small, separate app for staff and subcontractors.
          *
-         * It reads FOUR things and nothing else:
-         *   users/{myUid}   - to learn my name and confirm I am crew
+         * It reads FIVE things and nothing else:
+         *   users/{myUid}   - my name, that I am crew, and whose hours are mine
          *   projects        - only jobs whose crew array contains my uid
          *   tasks           - outstanding works on those jobs
          *   shoppingItems   - materials needed on those jobs
+         *   timeLogs        - MY OWN hours (hours only - no money is on them)
          *
-         * There is no code in this file that reads a quote, a rate, a material
-         * cost, a payment or anything to do with cash - and the Firestore rules
-         * deny those collections to a crew account anyway, so a modified copy of
-         * this page would get nothing either. The security is in the rules; this
-         * file just has no reason to ask.
+         * It can also SEND a docket cost (materialLogs), but never read one: the
+         * rules let a crew login add a material cost and refuse every read of
+         * one, even the one it just sent. Nothing in this file reads a quote, a
+         * rate, a material cost, a payment or anything to do with cash, and the
+         * rules refuse those to a crew login anyway.
          *********************************************************************/
-        import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+        import React, { useState, useEffect, useRef, useLayoutEffect } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
         import {
             ClipboardList, ShoppingCart, CheckCircle2, Circle, Check, X, Plus, Trash2,
-            ArrowLeft, RefreshCw, Briefcase, LogOut, Download, Cloud
+            ArrowLeft, RefreshCw, Briefcase, LogOut, Download, Cloud, Clock, Receipt
         } from 'https://esm.sh/lucide-react@0.294.0';
 
         import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -86,6 +87,41 @@
             messagingSenderId: "91354575877",
             appId: "1:91354575877:web:2a230353d38d54279c186c"
         };
+
+        // Money boxes group thousands as you type (1,234.50) so a missing zero
+        // stands out. The value handed back has no commas.
+        function groupMoney(raw) {
+            if (raw === null || raw === undefined) return '';
+            const str = String(raw).replace(/[^\d.]/g, '');
+            const dot = str.indexOf('.');
+            let whole = dot === -1 ? str : str.slice(0, dot);
+            const frac = dot === -1 ? null : str.slice(dot + 1).replace(/\./g, '').slice(0, 2);
+            whole = whole.replace(/^0+(?=\d)/, '');
+            const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+            return frac === null ? grouped : (grouped || '0') + '.' + frac;
+        }
+
+        function MoneyInput({ value, onChange, ...rest }) {
+            const ref = useRef(null);
+            const caretFromEnd = useRef(null);
+            useLayoutEffect(() => {
+                const el = ref.current;
+                if (!el || caretFromEnd.current === null) return;
+                if (document.activeElement === el) {
+                    let pos = el.value.length, n = caretFromEnd.current;
+                    while (pos > 0 && n > 0) { pos--; if (/[\d.]/.test(el.value[pos])) n--; }
+                    try { el.setSelectionRange(pos, pos); } catch (e) {}
+                }
+                caretFromEnd.current = null;
+            });
+            const handle = (e) => {
+                const el = e.target;
+                const at = el.selectionStart === null ? el.value.length : el.selectionStart;
+                caretFromEnd.current = (el.value.slice(at).match(/[\d.]/g) || []).length;
+                onChange(groupMoney(el.value).replace(/,/g, ''));
+            };
+            return <input {...rest} ref={ref} type="text" inputMode="decimal" autoComplete="off" value={groupMoney(value)} onChange={handle} />;
+        }
 
         function App() {
             const [db, setDb] = useState(null);
@@ -108,6 +144,21 @@
             const [newNeedQty, setNewNeedQty] = useState('');
             const [showDone, setShowDone] = useState(false);
             const [showBought, setShowBought] = useState(false);
+
+            // Hours and dockets
+            const today = () => new Date().toISOString().split('T')[0];
+            const [timeLogs, setTimeLogs] = useState([]);           // MY hours only
+            const [jobView, setJobView] = useState('lists');        // 'lists' | 'hours' | 'docket'
+            const [hDate, setHDate] = useState(today());
+            const [hHours, setHHours] = useState('');
+            const [hNotes, setHNotes] = useState('');
+            const [dItem, setDItem] = useState('');
+            const [dCost, setDCost] = useState('');
+            const [dDate, setDDate] = useState(today());
+            const [picking, setPicking] = useState(null);           // materials-needed item being ticked
+            const [pickCost, setPickCost] = useState('');
+            const [sentNote, setSentNote] = useState('');
+            const [busy, setBusy] = useState(false);
 
             const [loginEmail, setLoginEmail] = useState('');
             const [loginPwd, setLoginPwd] = useState('');
@@ -161,19 +212,28 @@
             const canInstall = !isStandalone && (deferredPrompt || isIos);
 
             // Who am I? One document read, and the only thing that decides access.
+            // Live, so when the office links this login to a team name (or takes
+            // access away) the app follows straight away.
             useEffect(() => {
                 if (!db || !user) return;
-                let cancelled = false;
-                (async () => {
-                    try {
-                        const snap = await getDoc(doc(db, 'users', user.uid));
-                        if (!cancelled) { setMe(snap.exists() ? snap.data() : null); setMeChecked(true); }
-                    } catch (e) {
-                        if (!cancelled) { setMe(null); setMeChecked(true); }
-                    }
-                })();
-                return () => { cancelled = true; };
+                const unsub = onSnapshot(doc(db, 'users', user.uid),
+                    (snap) => { setMe(snap.exists() ? snap.data() : null); setMeChecked(true); },
+                    () => { setMe(null); setMeChecked(true); }
+                );
+                return () => unsub();
             }, [db, user]);
+
+            // My own hours (on every job). Hours only - the rules refuse anyone
+            // else's, and no time log carries a cost.
+            const myPersonId = (me && me.personId) || '';
+            useEffect(() => {
+                if (!db || !user || !myPersonId) { setTimeLogs([]); return; }
+                const unsub = onSnapshot(query(collection(db, 'timeLogs'), where('personId', '==', myPersonId)),
+                    (snap) => setTimeLogs(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+                    (err) => console.error('timeLogs:', err.code)
+                );
+                return () => unsub();
+            }, [db, user, myPersonId]);
 
             // Only the jobs I have been put on.
             useEffect(() => {
@@ -206,18 +266,23 @@
             }, [db, user, jobKey]);
 
             const push = async (action, type, record) => {
-                if (!db || !record || !record.id) return;
+                if (!db || !record || !record.id) return false;
                 setSaving(true);
                 try {
                     if (action === 'delete') await deleteDoc(doc(db, type, record.id));
                     else {
-                        // Never carry a money field back up - the rules would refuse the save.
-                        const clean = { ...record };
-                        ['quote', 'payMode', 'cost', 'price', 'rate', 'cashRate', 'amount'].forEach(k => delete clean[k]);
+                        let clean = record;
+                        // The shared lists never carry money - the rules would refuse the save.
+                        if (type === 'tasks' || type === 'shoppingItems') {
+                            clean = { ...record };
+                            ['quote', 'payMode', 'cost', 'price', 'rate', 'cashRate', 'amount'].forEach(k => delete clean[k]);
+                        }
                         await setDoc(doc(db, type, record.id), clean);
                     }
+                    return true;
                 } catch (err) {
                     alert('Could not save: ' + (err.message || err));
+                    return false;
                 } finally {
                     setSaving(false);
                 }
@@ -337,7 +402,7 @@
                                 </p>
                             )}
                             {sorted.map(p => (
-                                <div key={p.id} onClick={() => setActiveProject(p)} className="bg-gray-800 p-4 rounded-xl border border-gray-700 active:bg-gray-700 cursor-pointer shadow-sm">
+                                <div key={p.id} onClick={() => { setActiveProject(p); setJobView('lists'); setSentNote(''); }} className="bg-gray-800 p-4 rounded-xl border border-gray-700 active:bg-gray-700 cursor-pointer shadow-sm">
                                     <h3 className="font-bold text-white text-lg leading-tight">{p.name}</h3>
                                     {p.client && <p className="text-sm text-gray-400 mb-2">{p.client}</p>}
                                     <div className="flex flex-wrap gap-2 mt-2">
@@ -420,13 +485,75 @@
                 push('upsert', 'shoppingItems', rec);
                 setNewNeedItem(''); setNewNeedQty('');
             };
-            // Crew tick an item as picked up. The price is the office's job - there
-            // is no cost field here at all.
+            const euro = (v) => new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' }).format(v);
+            const prettyDay = (iso) => new Date(iso).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+
+            // Ticking an item picked up opens a small sheet for the docket price.
+            // Un-ticking is allowed unless a cost already went to the office with
+            // it - crew cannot take a cost back, so the office does that.
             const toggleNeed = (n) => {
-                const bought = !n.purchased;
-                const rec = { ...n, purchased: bought, purchasedAt: bought ? new Date().toISOString() : '', purchasedBy: bought ? myName() : '' };
+                if (!n.purchased) { setPicking(n); setPickCost(''); return; }
+                if (n.materialLogId) { alert('A docket cost went to the office with this one, so only the office can undo it.'); return; }
+                const rec = { ...n, purchased: false, purchasedAt: '', purchasedBy: '' };
                 setShoppingItems(shoppingItems.map(x => x.id === n.id ? rec : x));
                 push('upsert', 'shoppingItems', rec);
+            };
+
+            const confirmPick = async () => {
+                const n = picking;
+                if (!n || busy) return;
+                const cost = pickCost === '' ? null : Number(pickCost);
+                if (cost !== null && (isNaN(cost) || cost < 0 || cost >= 1000000)) { alert('That cost does not look right.'); return; }
+                setBusy(true);
+                let materialLogId = '';
+                if (cost !== null && cost > 0) {
+                    const log = { id: newId('mat'), projectId: pid, item: needLabel(n), cost, date: new Date(today()).toISOString(), loggedBy: myName(), loggedByUid: user.uid, sourceNeedId: n.id, createdAt: new Date().toISOString() };
+                    const ok = await push('upsert', 'materialLogs', log);
+                    if (!ok) { setBusy(false); return; }
+                    materialLogId = log.id;
+                }
+                const rec = { ...n, purchased: true, purchasedAt: new Date().toISOString(), purchasedBy: myName(), materialLogId };
+                setShoppingItems(shoppingItems.map(x => x.id === n.id ? rec : x));
+                await push('upsert', 'shoppingItems', rec);
+                setBusy(false); setPicking(null); setPickCost('');
+                if (materialLogId) setSentNote(euro(cost) + ' for ' + needLabel(n) + ' sent to the office.');
+            };
+
+            // Hours go to the team-list name the office linked this login to.
+            const myJobHours = timeLogs.filter(t => t.projectId === pid).sort((a, b) => (a.date || '') < (b.date || '') ? 1 : -1);
+            const myJobTotal = myJobHours.reduce((sum, t) => sum + Number(t.hours || 0), 0);
+
+            const saveHours = async () => {
+                if (!myPersonId || busy) return;
+                const h = Number(hHours);
+                if (!hHours || isNaN(h) || h <= 0 || h > 24) { alert('Enter the hours worked that day, from 0.5 to 24.'); return; }
+                if (!hDate) { alert('Pick the day you worked.'); return; }
+                setBusy(true);
+                const rec = { id: newId('time'), projectId: pid, personId: myPersonId, hours: h, date: new Date(hDate).toISOString(), notes: hNotes.trim(), loggedBy: myName(), loggedByUid: user.uid, createdAt: new Date().toISOString() };
+                const ok = await push('upsert', 'timeLogs', rec);
+                setBusy(false);
+                if (ok) {
+                    setHHours(''); setHNotes(''); setHDate(today()); setJobView('lists');
+                    setSentNote(h + (h === 1 ? ' hour' : ' hours') + ' logged for ' + prettyDay(rec.date) + '.');
+                }
+            };
+
+            // A docket goes straight to the office. Crew can send one but never
+            // read one back - the rules refuse it.
+            const saveDocket = async () => {
+                if (busy) return;
+                const item = dItem.trim();
+                const c = Number(dCost);
+                if (!item) { alert('Say what the docket was for.'); return; }
+                if (dCost === '' || isNaN(c) || c < 0 || c >= 1000000) { alert('Enter the total on the docket.'); return; }
+                setBusy(true);
+                const rec = { id: newId('mat'), projectId: pid, item, cost: c, date: new Date(dDate || today()).toISOString(), loggedBy: myName(), loggedByUid: user.uid, createdAt: new Date().toISOString() };
+                const ok = await push('upsert', 'materialLogs', rec);
+                setBusy(false);
+                if (ok) {
+                    setDItem(''); setDCost(''); setDDate(today()); setJobView('lists');
+                    setSentNote(euro(c) + ' for ' + item + ' sent to the office.');
+                }
             };
             const removeTask = (t) => {
                 if (!window.confirm('Remove "' + t.text + '" from the list?')) return;
@@ -439,11 +566,92 @@
                 push('delete', 'shoppingItems', n);
             };
 
+            const field = 'w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white focus:border-blue-400 outline-none';
+            const label = 'block text-sm font-bold text-gray-400 mb-1';
+
+            if (jobView === 'hours') {
+                return (
+                    <div className="bg-gray-900 min-h-screen max-w-md mx-auto border-x border-gray-800">
+                        <Header title="Log my hours" subtitle={activeProject.name} onBack={() => setJobView('lists')}/>
+                        <div className="p-4 space-y-4 pb-24">
+                            {!myPersonId ? (
+                                <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-sm text-gray-300 leading-relaxed">
+                                    Your login is not linked to your name on the team list yet, so hours cannot be booked to you. Ask the office to link it, then come back here.
+                                </div>
+                            ) : (
+                                <React.Fragment>
+                                    <div>
+                                        <label className={label}>Day worked</label>
+                                        <input type="date" value={hDate} onChange={e => setHDate(e.target.value)} className={field}/>
+                                    </div>
+                                    <div>
+                                        <label className={label}>Hours</label>
+                                        <input type="number" step="0.5" min="0.5" max="24" inputMode="decimal" value={hHours} onChange={e => setHHours(e.target.value)} placeholder="e.g. 8" className={field}/>
+                                    </div>
+                                    <div>
+                                        <label className={label}>What you did <span className="font-normal text-gray-500">- optional</span></label>
+                                        <input type="text" value={hNotes} onChange={e => setHNotes(e.target.value)} placeholder="e.g. first fix upstairs" className={field}/>
+                                    </div>
+                                    <button onClick={saveHours} disabled={busy} className="w-full bg-blue-500 text-white font-bold py-4 rounded-xl flex justify-center items-center gap-2 disabled:opacity-50">
+                                        {busy ? <><RefreshCw size={18} className="animate-spin"/> Saving...</> : <><Clock size={18}/> Save hours</>}
+                                    </button>
+                                    <p className="text-xs text-gray-500">Once saved, only the office can change it. Got it wrong? Tell the office.</p>
+                                </React.Fragment>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            if (jobView === 'docket') {
+                return (
+                    <div className="bg-gray-900 min-h-screen max-w-md mx-auto border-x border-gray-800">
+                        <Header title="Log a docket" subtitle={activeProject.name} onBack={() => setJobView('lists')}/>
+                        <div className="p-4 space-y-4 pb-24">
+                            <div>
+                                <label className={label}>What it was for</label>
+                                <input type="text" value={dItem} onChange={e => setDItem(e.target.value)} placeholder="e.g. CEF docket 4411" className={field}/>
+                            </div>
+                            <div>
+                                <label className={label}>Total on the docket (€)</label>
+                                <MoneyInput value={dCost} onChange={v => setDCost(v)} placeholder="e.g. 182.50" className={field}/>
+                            </div>
+                            <div>
+                                <label className={label}>Date on the docket</label>
+                                <input type="date" value={dDate} onChange={e => setDDate(e.target.value)} className={field}/>
+                            </div>
+                            <button onClick={saveDocket} disabled={busy} className="w-full bg-blue-500 text-white font-bold py-4 rounded-xl flex justify-center items-center gap-2 disabled:opacity-50">
+                                {busy ? <><RefreshCw size={18} className="animate-spin"/> Sending...</> : <><Receipt size={18}/> Send to the office</>}
+                            </button>
+                            <p className="text-xs text-gray-500">This goes straight to the office. Keep the paper docket and hand it in too.</p>
+                        </div>
+                    </div>
+                );
+            }
+
             return (
                 <div className="bg-gray-900 min-h-screen max-w-md mx-auto border-x border-gray-800">
                     <Header title={activeProject.name} subtitle={activeProject.client || ''} onBack={() => setActiveProject(null)}/>
 
                     <div className="p-4 space-y-6 pb-24">
+                        {sentNote && (
+                            <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-3 flex items-start justify-between gap-3">
+                                <p className="text-sm text-green-400 font-bold flex items-center gap-2"><CheckCircle2 size={16} className="shrink-0"/> {sentNote}</p>
+                                <button onClick={() => setSentNote('')} className="text-gray-500 shrink-0"><X size={16}/></button>
+                            </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <button onClick={() => { setHDate(today()); setJobView('hours'); }} className="bg-gray-800 border border-gray-700 hover:border-blue-400 text-white p-4 rounded-xl flex flex-col items-center gap-2">
+                                <Clock className="text-blue-400" size={24}/>
+                                <span className="font-bold text-sm">Log my hours</span>
+                            </button>
+                            <button onClick={() => { setDDate(today()); setJobView('docket'); }} className="bg-gray-800 border border-gray-700 hover:border-blue-400 text-white p-4 rounded-xl flex flex-col items-center gap-2">
+                                <Receipt className="text-blue-400" size={24}/>
+                                <span className="font-bold text-sm">Log a docket</span>
+                            </button>
+                        </div>
+
                         {/* Outstanding works */}
                         <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 shadow-lg">
                             <div className="flex items-center justify-between mb-3">
@@ -533,9 +741,52 @@
                                     ))}
                                 </div>
                             )}
-                            <p className="text-[11px] text-gray-600 mt-3">Keep your docket - the office puts the price on.</p>
+                            <p className="text-[11px] text-gray-600 mt-3">Tick an item to add its docket price, or use Log a docket for anything not on the list.</p>
+                        </div>
+
+                        {/* My hours on this job - hours only, never money */}
+                        <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 shadow-lg">
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="font-bold text-white flex items-center gap-2"><Clock size={16} className="text-blue-400"/> My hours on this job</h3>
+                                <span className="text-sm font-bold text-blue-400">{myJobTotal} hrs</span>
+                            </div>
+                            {!myPersonId ? (
+                                <p className="text-gray-500 text-sm py-2">Not linked to your name yet. Ask the office.</p>
+                            ) : myJobHours.length === 0 ? (
+                                <p className="text-gray-500 text-sm py-2 text-center">No hours logged on this job yet.</p>
+                            ) : (
+                                <div className="space-y-2">
+                                    {myJobHours.map(t => (
+                                        <div key={t.id} className="flex justify-between items-center gap-3 bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                            <div className="min-w-0">
+                                                <p className="text-sm text-white font-bold">{prettyDay(t.date)}</p>
+                                                {t.notes && <p className="text-[11px] text-gray-500 truncate">{t.notes}</p>}
+                                            </div>
+                                            <p className="text-sm font-bold text-white shrink-0">{t.hours} hrs</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
+
+                    {picking && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50" onClick={() => !busy && setPicking(null)}>
+                            <div className="bg-gray-800 border border-gray-700 rounded-2xl w-full max-w-sm p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+                                <div className="flex justify-between items-start mb-1">
+                                    <h3 className="text-lg font-bold text-white flex items-center gap-2"><ShoppingCart size={18} className="text-purple-400"/> Picked it up?</h3>
+                                    <button onClick={() => setPicking(null)} className="text-gray-400 hover:text-white"><X size={20}/></button>
+                                </div>
+                                <p className="text-sm text-purple-400 font-bold mb-5">{needLabel(picking)}</p>
+                                <label className="block text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">Docket total (€) - optional</label>
+                                <MoneyInput autoFocus value={pickCost} onChange={v => setPickCost(v)} onKeyDown={e => { if (e.key === 'Enter') confirmPick(); }} placeholder="Leave blank if you have no docket" className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white focus:border-purple-400 outline-none"/>
+                                <p className="text-[11px] text-gray-500 mt-2">{pickCost !== '' && Number(pickCost) > 0 ? 'The price goes straight to the office.' : 'No price: it just comes off the list.'}</p>
+                                <button onClick={confirmPick} disabled={busy} className="w-full bg-purple-400 text-gray-900 font-bold py-3 rounded-xl mt-4 flex justify-center items-center gap-2 disabled:opacity-50">
+                                    {busy ? <><RefreshCw size={18} className="animate-spin"/> Saving...</> : <><Check size={18}/> Mark as picked up</>}
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         }
